@@ -1,0 +1,314 @@
+[
+  {
+    "stap": "Categorie-toewijzing",
+    "input": "spoon hoort bij bestek - bestek ",
+    "actie": {
+      "type": "category_mapping",
+      "leverancier_category": "spoon",
+      "leverancier_item_cat": "?",
+      "hoofdcategorie": "servies",
+      "subcategorie": "Bestek",
+      "sub_subcategorie": "Bestek",
+      "beschrijving": "Spoon (lepel) moet gekoppeld worden aan servies > Bestek > Bestek"
+    },
+    "raw_response": "```json\n{\n  \"type\": \"category_mapping\",\n  \"leverancier_category\": \"spoon\",\n  \"leverancier_item_cat\": \"?\",\n  \"hoofdcategorie\": \"servies\",\n  \"subcategorie\": \"Bestek\",\n  \"sub_subcategorie\": \"Bestek\",\n  \"beschrijving\": \"Spoon (lepel) moet gekoppeld worden aan servies > Bestek > Bestek\"\n}\n```",
+    "timestamp": "2026-04-13T09:27:12.165113"
+  },
+  {
+    "stap": "Categorie-toewijzing",
+    "input": "Desert + (iets van bestek in het engels) hoort bij bestek - dessertbestek\n",
+    "actie": {
+      "type": "category_mapping",
+      "leverancier_category": "Desert",
+      "leverancier_item_cat": "?",
+      "hoofdcategorie": "servies",
+      "subcategorie": "Bestek",
+      "sub_subcategorie": "Dessertbestek",
+      "beschrijving": "Leverancier-code 'Desert' (vermoedelijk dessertbestek in het Engels) moet gekoppeld worden aan servies > Bestek > Dessertbestek"
+    },
+    "raw_response": "```json\n{\n  \"type\": \"category_mapping\",\n  \"leverancier_category\": \"Desert\",\n  \"leverancier_item_cat\": \"?\",\n  \"hoofdcategorie\": \"servies\",\n  \"subcategorie\": \"Bestek\",\n  \"sub_subcategorie\": \"Dessertbestek\",\n  \"beschrijving\": \"Leverancier-code 'Desert' (vermoedelijk dessertbestek in het Engels) moet gekoppeld worden aan servies > Bestek > Dessertbestek\"\n}\n```",
+    "timestamp": "2026-04-13T09:28:26.724496"
+  },
+  {
+    "stap": "Categorie-toewijzing",
+    "input": "Kijk goef of indoor potten niet ook outdoor kunnen zijn, lees de description goed door. Veel kunnen dit wel namelijk en die moeten onder beide vallen (dus bloempotten binnen & bloempotten buiten) en moeten dus ook beide tags hebben\n",
+    "actie": {
+      "type": "unclear",
+      "beschrijving": "Je vraag is een opmerking/controle-instructie, geen concrete categorie-mapping correctie. Je stelt voor om te controleren of bepaalde potten in de leverancierdata zowel indoor als outdoor geschikt zijn, en die dan onder BEIDE subcategorieën in te delen (Bloempotten binnen EN Bloempotten buiten). Dit vereist echter specifieke leverancier_category en leverancier_item_cat codes, en concrete product-descriptions om te evalueren. Geef alstublieft aan: (1) welke leverancier_category + leverancier_item_cat je bedoelt, en (2) welke producten/descriptions je hebt gecontroleerd, zodat ik de juiste mapping(s) kan aanmaken."
+    },
+    "raw_response": "```json\n{\n  \"type\": \"unclear\",\n  \"beschrijving\": \"Je vraag is een opmerking/controle-instructie, geen concrete categorie-mapping correctie. Je stelt voor om te controleren of bepaalde potten in de leverancierdata zowel indoor als outdoor geschikt zijn, en die dan onder BEIDE subcategorieën in te delen (Bloempotten binnen EN Bloempotten buiten). Dit vereist echter specifieke leverancier_category en leverancier_item_cat codes, en concrete product-descriptions om te evalueren. Geef alstublieft aan: (1) welke leverancier_category + leverancier_item_cat je bedoelt, en (2) welke producten/descriptions je hebt gecontroleerd, zodat ik de juiste mapping(s) kan aanmaken.\"\n}\n```",
+    "timestamp": "2026-04-13T10:41:22.240587"
+  },
+  {
+    "stap": "Categorie-toewijzing",
+    "input": "Vrijwel alles wat nu bij bloempotten buiten staat, kan onder de subcategorie: \n\nSierpotten (staat letterlijk in de beschrijving)\nen Serax Bloempot (specifiek merk serax en het is een bloempot) \n\nDus ipv bloempotten buiten met die deze 2 sub sub categorieen krijgen\n",
+    "actie": {
+      "type": "unclear",
+      "beschrijving": "De correctie is niet volledig duidelijk. U lijkt aan te geven dat items die nu onder 'Bloempotten buiten' staan, verplaatst moeten worden naar 'Sierpotten' en 'Serax bloempot'. Echter:\n\n1. 'Sierpotten' staat in de lijst onder 'Vazen & Potten > Potten' (met vraagteken: 'Sierpotten?*')\n2. 'Serax bloempot' staat ook onder 'Vazen & Potten > Potten'\n3. 'Bloempotten buiten' is een sub-subcategorie onder 'Vazen & Potten > Potten'\n\nVraag: Wilt u dat items uit 'Bloempotten buiten' verdeeld worden over 'Sierpotten' en 'Serax bloempot'? En moet 'Bloempotten buiten' dan leeggemaakt/verwijderd worden? \n\nGeef a.u.b. aan welke leverancier-codes (leverancier_category + leverancier_item_cat) deze wijziging nodig hebben, zodat ik de juiste mapping kan creëren."
+    },
+    "raw_response": "```json\n{\n  \"type\": \"unclear\",\n  \"beschrijving\": \"De correctie is niet volledig duidelijk. U lijkt aan te geven dat items die nu onder 'Bloempotten buiten' staan, verplaatst moeten worden naar 'Sierpotten' en 'Serax bloempot'. Echter:\\n\\n1. 'Sierpotten' staat in de lijst onder 'Vazen & Potten > Potten' (met vraagteken: 'Sierpotten?*')\\n2. 'Serax bloempot' staat ook onder 'Vazen & Potten > Potten'\\n3. 'Bloempotten buiten' is een sub-subcategorie onder 'Vazen & Potten > Potten'\\n\\nVraag: Wilt u dat items uit 'Bloempotten buiten' verdeeld worden over 'Sierpotten' en 'Serax bloempot'? En moet 'Bloempotten buiten' dan leeggemaakt/verwijderd worden? \\n\\nGeef a.u.b. aan welke leverancier-codes (leverancier_category + leverancier_item_cat) deze wijziging nodig hebben, zodat ik de juiste mapping kan creëren.\"\n}\n```",
+    "timestamp": "2026-04-13T10:55:09.544998"
+  },
+  {
+    "stap": "Categorie-toewijzing",
+    "input": "Alles met de naam Wally is een subcategorie \" Hangpotten \" ",
+    "actie": {
+      "type": "unclear",
+      "beschrijving": "De correctie verwijst naar 'Wally' als een leverancierscat of item-code, maar dit is niet duidelijk. Wally lijkt een merknaam/leverancier te zijn. Om een categorie-mapping aan te passen, heb ik nodig: (1) de leverancier_category-code, (2) de leverancier_item_cat-code, en (3) welke doelcategorie u wilt gebruiken. 'Hangpotten' is een sub-subcategorie onder 'Vazen & Potten > Potten'. Kunt u preciseren: welke leveranciercodes moeten naar 'Vazen & Potten > Potten > Hangpotten' gemapped worden?"
+    },
+    "raw_response": "```json\n{\n  \"type\": \"unclear\",\n  \"beschrijving\": \"De correctie verwijst naar 'Wally' als een leverancierscat of item-code, maar dit is niet duidelijk. Wally lijkt een merknaam/leverancier te zijn. Om een categorie-mapping aan te passen, heb ik nodig: (1) de leverancier_category-code, (2) de leverancier_item_cat-code, en (3) welke doelcategorie u wilt gebruiken. 'Hangpotten' is een sub-subcategorie onder 'Vazen & Potten > Potten'. Kunt u preciseren: welke leveranciercodes moeten naar 'Vazen & Potten > Potten > Hangpotten' gemapped worden?\"\n}\n```",
+    "timestamp": "2026-04-13T11:04:33.173157"
+  },
+  {
+    "stap": "Producttitel & meta",
+    "input": "Als er 2x hetzelfde woord in de titel zit dan (door de categorie + de naam toe te voegen) graag maar 1 neerzetten: \n\nDus bv: \n\nSalt & Pepper - Placemats Placemat 38cm Koper Vene - Set van 4\n\nDat wordt dan:\n\nSalt & Pepper - Placemat 38cm Koper Vene - Set van 4",
+    "actie": {
+      "type": "title_rule",
+      "regel": "remove_duplicate_words",
+      "beschrijving": "Verwijder duplicate woorden in titels. Als een woord zowel in de categorie als in de productnaam voorkomt, gebruik het slechts eenmaal in de uiteindelijke titel.",
+      "voorbeeld_voor": "Salt & Pepper - Placemats Placemat 38cm Koper Vene - Set van 4",
+      "voorbeeld_na": "Salt & Pepper - Placemat 38cm Koper Vene - Set van 4"
+    },
+    "raw_response": "```json\n{\n  \"type\": \"title_rule\",\n  \"regel\": \"remove_duplicate_words\",\n  \"beschrijving\": \"Verwijder duplicate woorden in titels. Als een woord zowel in de categorie als in de productnaam voorkomt, gebruik het slechts eenmaal in de uiteindelijke titel.\",\n  \"voorbeeld_voor\": \"Salt & Pepper - Placemats Placemat 38cm Koper Vene - Set van 4\",\n  \"voorbeeld_na\": \"Salt & Pepper - Placemat 38cm Koper Vene - Set van 4\"\n}\n```",
+    "timestamp": "2026-04-13T16:45:27.773524"
+  },
+  {
+    "stap": "Categorie-toewijzing",
+    "input": "Tafelklok is geen wanddecoratie maar woondecoratie\n",
+    "actie": {
+      "type": "unclear",
+      "beschrijving": "De correctie verwijst naar 'Tafelklok', maar deze term komt niet voor in de beschikbare categorieënlijst. Ook is onduidelijk welke leverancier_category en leverancier_item_cat codes hierbij horen. Bovendien bestaat 'woondecoratie' niet als subcategorie; de dichtstbijzijnde opties zijn 'Interieur & Styling' onder 'Wonen & badkamer'. Graag verduidelijking: wat zijn de huidige leverancier-codes, en bedoelt u dat het item naar 'Wonen & badkamer > Interieur & Styling > Wanddecoratie' of naar een andere categorie moet?"
+    },
+    "raw_response": "```json\n{\n  \"type\": \"unclear\",\n  \"beschrijving\": \"De correctie verwijst naar 'Tafelklok', maar deze term komt niet voor in de beschikbare categorieënlijst. Ook is onduidelijk welke leverancier_category en leverancier_item_cat codes hierbij horen. Bovendien bestaat 'woondecoratie' niet als subcategorie; de dichtstbijzijnde opties zijn 'Interieur & Styling' onder 'Wonen & badkamer'. Graag verduidelijking: wat zijn de huidige leverancier-codes, en bedoelt u dat het item naar 'Wonen & badkamer > Interieur & Styling > Wanddecoratie' of naar een andere categorie moet?\"\n}\n```",
+    "timestamp": "2026-04-13T16:46:33.933254"
+  },
+  {
+    "stap": "Categorie-toewijzing",
+    "input": "Deep plate heeft ook als extra subcategorie \"Diepe borden\"",
+    "actie": {
+      "type": "unclear",
+      "beschrijving": "De correctie is niet duidelijk genoeg. 'Deep plate' lijkt een product te zijn, maar voor een categorie-mapping heb ik nodig: (1) de leverancier_category code, (2) de leverancier_item_cat code, en (3) welke huidige mapping moet worden aangepast of aangevuld. Kunt u de leverancier-codes specificeren en verduidelijken wat de huidige mapping is en wat deze moet worden?"
+    },
+    "raw_response": "```json\n{\n  \"type\": \"unclear\",\n  \"beschrijving\": \"De correctie is niet duidelijk genoeg. 'Deep plate' lijkt een product te zijn, maar voor een categorie-mapping heb ik nodig: (1) de leverancier_category code, (2) de leverancier_item_cat code, en (3) welke huidige mapping moet worden aangepast of aangevuld. Kunt u de leverancier-codes specificeren en verduidelijken wat de huidige mapping is en wat deze moet worden?\"\n}\n```",
+    "timestamp": "2026-04-13T18:22:14.067405"
+  },
+  {
+    "stap": "Categorie-toewijzing",
+    "input": "Breakfast plates zijn \"ontbijtborden\" geen \"dinerborden\"",
+    "actie": {
+      "type": "name_rule",
+      "zoekwoord": "breakfast plate",
+      "sub_subcategorie": "Ontbijtborden",
+      "is_extra": false,
+      "beschrijving": "Breakfast plates moeten als primaire categorie 'Ontbijtborden' krijgen, niet 'Dinerborden' (toegepast op 8 producten)"
+    },
+    "raw_response": "```json\n{\n  \"type\": \"name_rule\",\n  \"zoekwoord\": \"breakfast plate\",\n  \"sub_subcategorie\": \"Ontbijtborden\",\n  \"is_extra\": false,\n  \"beschrijving\": \"Breakfast plates moeten als primaire categorie 'Ontbijtborden' krijgen, niet 'Dinerborden'\"\n}\n```",
+    "timestamp": "2026-04-13T18:27:55.861534"
+  },
+  {
+    "stap": "Categorie-toewijzing",
+    "input": "Alles met Deep plate in de tekst kan een 2e subcategorie krijgen \"diepe borden\"",
+    "actie": {
+      "type": "name_rule",
+      "zoekwoord": "deep plate",
+      "sub_subcategorie": "Diepe borden",
+      "is_extra": true,
+      "beschrijving": "Producten met 'Deep plate' in de naam krijgen 'Diepe borden' als extra sub-subcategorie (toegepast op 3 producten)"
+    },
+    "raw_response": "```json\n{\n  \"type\": \"name_rule\",\n  \"zoekwoord\": \"deep plate\",\n  \"sub_subcategorie\": \"Diepe borden\",\n  \"is_extra\": true,\n  \"beschrijving\": \"Producten met 'Deep plate' in de naam krijgen 'Diepe borden' als extra sub-subcategorie\"\n}\n```",
+    "timestamp": "2026-04-13T18:28:36.065186"
+  },
+  {
+    "stap": "Categorie-toewijzing",
+    "input": " Breakfast plates zijn \"ontbijtborden\" geen \"dinerborden\"",
+    "actie": {
+      "type": "name_rule",
+      "zoekwoord": "breakfast plate",
+      "sub_subcategorie": "Ontbijtborden",
+      "is_extra": false,
+      "beschrijving": "Breakfast plates moeten als primaire categorie Ontbijtborden krijgen, niet Dinerborden (toegepast op 8 producten)"
+    },
+    "raw_response": "```json\n{\n  \"type\": \"name_rule\",\n  \"zoekwoord\": \"breakfast plate\",\n  \"sub_subcategorie\": \"Ontbijtborden\",\n  \"is_extra\": false,\n  \"beschrijving\": \"Breakfast plates moeten als primaire categorie Ontbijtborden krijgen, niet Dinerborden\"\n}\n```",
+    "timestamp": "2026-04-13T18:33:51.772437"
+  },
+  {
+    "stap": "Categorie-toewijzing",
+    "input": "Alles met Deep plate in de tekst kan een 2e subcategorie krijgen \"diepe borden\"",
+    "actie": {
+      "type": "name_rule",
+      "zoekwoord": "deep plate",
+      "sub_subcategorie": "Diepe borden",
+      "is_extra": true,
+      "beschrijving": "Producten met 'Deep plate' in de naam krijgen 'Diepe borden' als extra sub-subcategorie (toegepast op 3 producten)"
+    },
+    "raw_response": "```json\n{\n  \"type\": \"name_rule\",\n  \"zoekwoord\": \"deep plate\",\n  \"sub_subcategorie\": \"Diepe borden\",\n  \"is_extra\": true,\n  \"beschrijving\": \"Producten met 'Deep plate' in de naam krijgen 'Diepe borden' als extra sub-subcategorie\"\n}\n```",
+    "timestamp": "2026-04-13T18:34:10.057536"
+  },
+  {
+    "stap": "Categorie-toewijzing",
+    "input": "Startsets zijn serviessets en kijk onder welke sub sub categorie ze vallen + of ze mogelijk onder 2 subcategorieen vallen",
+    "actie": {
+      "type": "name_rule",
+      "zoekwoord": "startset",
+      "sub_subcategorie": "Serviessets",
+      "is_extra": false,
+      "beschrijving": "Startsets zijn serviessets en vallen onder servies > Serviessets (toegepast op 27 producten)"
+    },
+    "raw_response": "```json\n{\n  \"type\": \"name_rule\",\n  \"zoekwoord\": \"startset\",\n  \"sub_subcategorie\": \"Serviessets\",\n  \"is_extra\": false,\n  \"beschrijving\": \"Startsets zijn serviessets en vallen onder servies > Serviessets\"\n}\n```\n\n**Opmerking:** Startsets vallen primair onder **servies > Serviessets**. Ze zouden theoretisch ook onder **servies > Serviersgoed** kunnen vallen als ze bestek of andere serveergoederen bevatten, maar dit hangt af van de productsamenstelling. Wil je dat ik een extra tag toevoeg voor bepaalde startsets die ook serviersgoed bevatten?",
+    "timestamp": "2026-04-13T18:35:01.080198"
+  },
+  {
+    "stap": "Categorie-toewijzing",
+    "input": "Alles met Deep plate in de tekst kan een 2e subcategorie krijgen \"diepe borden\"",
+    "actie": {
+      "type": "name_rule",
+      "zoekwoord": "deep plate",
+      "sub_subcategorie": "Diepe borden",
+      "is_extra": true,
+      "beschrijving": "Producten met 'Deep plate' in de naam krijgen 'Diepe borden' als extra sub-subcategorie (toegepast op 3 producten)"
+    },
+    "raw_response": "```json\n{\n  \"type\": \"name_rule\",\n  \"zoekwoord\": \"deep plate\",\n  \"sub_subcategorie\": \"Diepe borden\",\n  \"is_extra\": true,\n  \"beschrijving\": \"Producten met 'Deep plate' in de naam krijgen 'Diepe borden' als extra sub-subcategorie\"\n}\n```",
+    "timestamp": "2026-04-13T18:44:56.464242"
+  },
+  {
+    "stap": "Categorie-toewijzing",
+    "input": " Breakfast plates zijn \"ontbijtborden\" geen \"dinerborden\"",
+    "actie": {
+      "type": "name_rule",
+      "zoekwoord": "breakfast plate",
+      "sub_subcategorie": "Ontbijtborden",
+      "is_extra": false,
+      "beschrijving": "Breakfast plates moeten als Ontbijtborden gecategoriseerd worden, niet als Dinerborden (toegepast op 8 producten)"
+    },
+    "raw_response": "```json\n{\n  \"type\": \"name_rule\",\n  \"zoekwoord\": \"breakfast plate\",\n  \"sub_subcategorie\": \"Ontbijtborden\",\n  \"is_extra\": false,\n  \"beschrijving\": \"Breakfast plates moeten als Ontbijtborden gecategoriseerd worden, niet als Dinerborden\"\n}\n```",
+    "timestamp": "2026-04-13T18:45:11.840099"
+  },
+  {
+    "stap": "Categorie-toewijzing",
+    "input": "Tea cups zijn theeglazen en geen koffiemokken",
+    "actie": {
+      "type": "name_rule",
+      "zoekwoord": "tea cup",
+      "sub_subcategorie": "Theeglazen",
+      "is_extra": false,
+      "beschrijving": "Tea cups moeten gecategoriseerd worden als Theeglazen, niet als Koffiemokken (toegepast op 2 producten)"
+    },
+    "raw_response": "```json\n{\n  \"type\": \"name_rule\",\n  \"zoekwoord\": \"tea cup\",\n  \"sub_subcategorie\": \"Theeglazen\",\n  \"is_extra\": false,\n  \"beschrijving\": \"Tea cups moeten gecategoriseerd worden als Theeglazen, niet als Koffiemokken\"\n}\n```",
+    "timestamp": "2026-04-13T18:45:56.808172"
+  },
+  {
+    "stap": "Categorie-toewijzing",
+    "input": "Alle Chairs en Seats mogen een aparte sub sub categorie krijgen onder; Wonen & Badkamer - Verlichting & Meubels - en daarna \"Stoelen\"",
+    "actie": {
+      "type": "name_rule_bulk",
+      "regels": [
+        {
+          "zoekwoord": "chair",
+          "sub_subcategorie": "Stoelen",
+          "is_extra": false,
+          "beschrijving": "Alle producten met 'chair' in de naam naar Stoelen"
+        },
+        {
+          "zoekwoord": "seat",
+          "sub_subcategorie": "Stoelen",
+          "is_extra": false,
+          "beschrijving": "Alle producten met 'seat' in de naam naar Stoelen"
+        }
+      ],
+      "beschrijving": "Chairs en Seats krijgen nieuwe sub-subcategorie 'Stoelen' onder Wonen & Badkamer > Verlichting & Meubels (toegepast op 11 producten)"
+    },
+    "raw_response": "```json\n{\n  \"type\": \"name_rule_bulk\",\n  \"regels\": [\n    {\n      \"zoekwoord\": \"chair\",\n      \"sub_subcategorie\": \"Stoelen\",\n      \"is_extra\": false,\n      \"beschrijving\": \"Alle producten met 'chair' in de naam naar Stoelen\"\n    },\n    {\n      \"zoekwoord\": \"seat\",\n      \"sub_subcategorie\": \"Stoelen\",\n      \"is_extra\": false,\n      \"beschrijving\": \"Alle producten met 'seat' in de naam naar Stoelen\"\n    }\n  ],\n  \"beschrijving\": \"Chairs en Seats krijgen nieuwe sub-subcategorie 'Stoelen' onder Wonen & Badkamer > Verlichting & Meubels\"\n}\n```",
+    "timestamp": "2026-04-13T18:51:31.406299"
+  },
+  {
+    "stap": "Categorie-toewijzing",
+    "input": "Alle Candle Holders zijn geen Geurkaarsen maar krijgen een nieuwe subcategorie genaamd Kaarsenstandaard (Sub sub categorie onder interieur & Styling) ",
+    "actie": {
+      "type": "name_rule",
+      "zoekwoord": "candle holder",
+      "sub_subcategorie": "Kaarsenstandaard",
+      "is_extra": false,
+      "beschrijving": "Alle producten met 'Candle Holder' in de naam worden gecategoriseerd als Kaarsenstandaard onder Wonen & badkamer > Interieur & Styling, niet als Geurkaarsen (toegepast op 5 producten)"
+    },
+    "raw_response": "```json\n{\n  \"type\": \"name_rule\",\n  \"zoekwoord\": \"candle holder\",\n  \"sub_subcategorie\": \"Kaarsenstandaard\",\n  \"is_extra\": false,\n  \"beschrijving\": \"Alle producten met 'Candle Holder' in de naam worden gecategoriseerd als Kaarsenstandaard onder Wonen & badkamer > Interieur & Styling, niet als Geurkaarsen\"\n}\n```",
+    "timestamp": "2026-04-13T18:58:00.260109"
+  },
+  {
+    "stap": "Categorie-toewijzing",
+    "input": "Tea glass zijn theeglazen",
+    "actie": {
+      "type": "name_rule",
+      "zoekwoord": "tea glass",
+      "sub_subcategorie": "Theeglazen",
+      "is_extra": false,
+      "beschrijving": "Producten met 'tea glass' in de naam worden gecategoriseerd als Theeglazen (toegepast op 1 producten)"
+    },
+    "raw_response": "```json\n{\n  \"type\": \"name_rule\",\n  \"zoekwoord\": \"tea glass\",\n  \"sub_subcategorie\": \"Theeglazen\",\n  \"is_extra\": false,\n  \"beschrijving\": \"Producten met 'tea glass' in de naam worden gecategoriseerd als Theeglazen\"\n}\n```",
+    "timestamp": "2026-04-13T19:04:15.348648"
+  },
+  {
+    "stap": "Categorie-toewijzing",
+    "input": "Longdrink glass zijn categorie longdrinkglazen",
+    "actie": {
+      "type": "name_rule",
+      "zoekwoord": "longdrink glass",
+      "sub_subcategorie": "Longdrink glazen",
+      "is_extra": false,
+      "beschrijving": "Longdrink glass producten worden gecategoriseerd als Longdrink glazen (toegepast op 1 producten)"
+    },
+    "raw_response": "```json\n{\n  \"type\": \"name_rule\",\n  \"zoekwoord\": \"longdrink glass\",\n  \"sub_subcategorie\": \"Longdrink glazen\",\n  \"is_extra\": false,\n  \"beschrijving\": \"Longdrink glass producten worden gecategoriseerd als Longdrink glazen\"\n}\n```",
+    "timestamp": "2026-04-13T19:05:09.549781"
+  },
+  {
+    "stap": "Categorie-toewijzing",
+    "input": "Water glass hoort in de categorie waterglazen",
+    "actie": {
+      "type": "name_rule",
+      "zoekwoord": "water glass",
+      "sub_subcategorie": "Waterglazen",
+      "is_extra": false,
+      "beschrijving": "Water glass producten worden gekategoriseerd als Waterglazen onder Glazen > Water & Thee (toegepast op 1 producten)"
+    },
+    "raw_response": "```json\n{\n  \"type\": \"name_rule\",\n  \"zoekwoord\": \"water glass\",\n  \"sub_subcategorie\": \"Waterglazen\",\n  \"is_extra\": false,\n  \"beschrijving\": \"Water glass producten worden gekategoriseerd als Waterglazen onder Glazen > Water & Thee\"\n}\n```",
+    "timestamp": "2026-04-13T19:05:32.428261"
+  },
+  {
+    "stap": "Categorie-toewijzing",
+    "input": "Alles wat geen WINE glass in de titel heeft is GEEN wijnglas maar een waterglazen",
+    "actie": {
+      "type": "name_rule",
+      "zoekwoord": "wine glass",
+      "sub_subcategorie": "Wijnglazen",
+      "is_extra": false,
+      "beschrijving": "Alleen producten met 'wine glass' in de titel zijn wijnglazen. Alles zonder deze exacte term moet als waterglazen worden gecategoriseerd. (toegepast op 6 producten)"
+    },
+    "raw_response": "```json\n{\n  \"type\": \"name_rule\",\n  \"zoekwoord\": \"wine glass\",\n  \"sub_subcategorie\": \"Wijnglazen\",\n  \"is_extra\": false,\n  \"beschrijving\": \"Alleen producten met 'wine glass' in de titel zijn wijnglazen. Alles zonder deze exacte term moet als waterglazen worden gecategoriseerd.\"\n}\n```",
+    "timestamp": "2026-04-13T19:06:51.317452"
+  },
+  {
+    "stap": "Categorie-toewijzing",
+    "input": "dessert plate zijn desertborden",
+    "actie": {
+      "type": "name_rule",
+      "zoekwoord": "dessert plate",
+      "sub_subcategorie": "Dessertbordjes",
+      "is_extra": false,
+      "beschrijving": "Producten met 'dessert plate' in de naam behoren tot de categorie Dessertbordjes (toegepast op 2 producten)"
+    },
+    "raw_response": "```json\n{\n  \"type\": \"name_rule\",\n  \"zoekwoord\": \"dessert plate\",\n  \"sub_subcategorie\": \"Dessertbordjes\",\n  \"is_extra\": false,\n  \"beschrijving\": \"Producten met 'dessert plate' in de naam behoren tot de categorie Dessertbordjes\"\n}\n```",
+    "timestamp": "2026-04-14T00:48:02.165699"
+  },
+  {
+    "stap": "Categorie-toewijzing",
+    "input": "Napkin ring is geen snijplank maar servetten \n",
+    "actie": {
+      "type": "name_rule",
+      "zoekwoord": "napkin ring",
+      "sub_subcategorie": "Servetten",
+      "is_extra": false,
+      "beschrijving": "Napkin rings behoren bij Servetten, niet bij Snijplanken (toegepast op 1 producten)"
+    },
+    "raw_response": "```json\n{\n  \"type\": \"name_rule\",\n  \"zoekwoord\": \"napkin ring\",\n  \"sub_subcategorie\": \"Servetten\",\n  \"is_extra\": false,\n  \"beschrijving\": \"Napkin rings behoren bij Servetten, niet bij Snijplanken\"\n}\n```",
+    "timestamp": "2026-04-14T00:49:39.621379"
+  }
+]

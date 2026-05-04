@@ -1,0 +1,13 @@
+{
+  "sku": "Brand_id",
+  "ean_piece": "EAN Piece",
+  "ean_shopify": "EAN Packaging/Giftbox",
+  "product_name_raw": "Short Product Name Piece (English)",
+  "designer": "Designer",
+  "kleur_en": "Color Group ",
+  "materiaal_nl": "Product Material",
+  "leverancier_category": "Product Category",
+  "leverancier_item_cat": "Item Category",
+  "giftbox": "Giftbox availble?",
+  "giftbox_qty": "Giftbox quantity"
+}

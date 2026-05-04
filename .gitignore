@@ -1,0 +1,29 @@
+# Intermediates — always regenerated
+.tmp/
+
+# Secrets & credentials
+.env
+credentials.json
+token.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Exports & local data
+exports/
+*.xlsx
+*.csv
+Master Files/
+Eigen Bestande/
+active/
+backup/
+
+# Temp & editor files
+*.tmp
+*.tmp.*
+.claude/
+*.py.tmp*

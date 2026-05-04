@@ -1,0 +1,11 @@
+{
+  "sku": "Artikelcode",
+  "ean_piece": "EAN code per stuk",
+  "ean_shopify": "EAN code per stuk",
+  "product_name_raw": "Productnaam",
+  "kleur_en": "Kleur (1)",
+  "materiaal_nl": "Materiaal (1)",
+  "leverancier_category": "Collectie",
+  "rrp_stuk_eur": "Retail adviesprijs incl. btw",
+  "inkoopprijs_stuk_eur": " Nettoprijs per stuk (excl. btw) 2026 "
+}

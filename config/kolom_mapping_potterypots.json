@@ -1,0 +1,15 @@
+{
+  "sku": "Articlecode",
+  "ean_piece": "EAN-UCC _Code",
+  "ean_shopify": "EAN-UCC _Code",
+  "product_name_raw": "Description",
+  "kleur_en": "Color name",
+  "materiaal_nl": "Material",
+  "leverancier_category": "Collection",
+  "leverancier_item_cat": "Form",
+  "rrp_stuk_eur": "RRP",
+  "inkoopprijs_stuk_eur": "Pricelist per 02-12-2025",
+  "hoogte_cm": "Height\nsingle item\n(cm)",
+  "lengte_cm": "Length\nsingle item\n (cm)",
+  "breedte_cm": "Width\nsingle item \n(cm) "
+}
