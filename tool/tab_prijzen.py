@@ -25,7 +25,11 @@ def render() -> None:
         "Hextom is de enige manier om prijzen in Shopify bij te werken."
     )
 
-    sb = get_supabase()
+    try:
+        sb = get_supabase()
+    except Exception as e:
+        st.error(f"⚠️ Supabase niet bereikbaar: {e}")
+        return
     client_id = get_client_id()
     render_pending_banner(sb, client_id)
 
