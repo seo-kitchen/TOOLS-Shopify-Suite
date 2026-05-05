@@ -196,7 +196,7 @@ def _load(vendor: str, shopify_status: str, zoek: str, limit: int) -> list[dict]
 
 
 def render() -> None:
-    st.subheader("♻️ Archief herverwerken")
+    st.subheader("Archief herverwerken")
     st.caption(
         "Selecteer producten direct uit Shopify-data — geen Hextom-export nodig. "
         "Filter op merk en status, selecteer, en exporteer of herstart de pipeline."

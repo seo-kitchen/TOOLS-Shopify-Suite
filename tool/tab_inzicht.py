@@ -310,7 +310,7 @@ from pathlib import Path
 # ── Hoofdrender ───────────────────────────────────────────────────────────────
 
 def render() -> None:
-    st.subheader("🔎 Inzicht")
+    st.subheader("Inzicht")
     st.caption("Snel opzoeken, producten online en collectiepagina's in één overzicht.")
 
     _render_sync_banner()

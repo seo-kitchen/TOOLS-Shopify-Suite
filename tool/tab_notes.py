@@ -165,7 +165,7 @@ def _add_fallback(client_id: str, tekst: str, label: str, door: str) -> bool:
 # ── Render ────────────────────────────────────────────────────────────────────
 
 def render() -> None:
-    st.subheader("📝 Notities & Updates")
+    st.subheader("Notities")
     st.caption(
         "Schrijf op wat opvalt, wat mist of wat nog moet. "
         "Geen taakbeheer — gewoon een notitieboekje voor het team."

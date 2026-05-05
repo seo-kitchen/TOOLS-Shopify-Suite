@@ -361,7 +361,7 @@ def _run_claude(messages: list[dict]) -> tuple[str, list[dict] | None]:
 # ── Render ────────────────────────────────────────────────────────────────────
 
 def render() -> None:
-    st.subheader("💬 Data-assistent")
+    st.subheader("Assistent")
     st.caption(
         "Stel vragen over de productdata. Claude zoekt in de database en stelt "
         "aanpassingen voor — jij bevestigt altijd voordat er iets wordt gewijzigd."

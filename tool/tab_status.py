@@ -481,7 +481,7 @@ def _sectie_header(titel: str, rood: int, oranje: int) -> None:
 # ── Render ────────────────────────────────────────────────────────────────────
 
 def render() -> None:
-    st.subheader("🔍 Status & Analyses")
+    st.subheader("Status & Analyses")
     st.caption(
         "Gebaseerd op **actieve (live) Shopify-producten**. "
         "Gearchiveerde producten worden genegeerd."

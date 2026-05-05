@@ -18,7 +18,7 @@ from export_log import log_export, render_confirm_widget, render_pending_banner
 
 
 def render() -> None:
-    st.subheader("💶 Prijzen bijwerken")
+    st.subheader("Prijzen bijwerken")
     st.caption(
         "Upload de nieuwe leverancier prijslijst. "
         "Systeem toont een diff (oud → nieuw) en genereert een Hextom bulk-price Excel. "

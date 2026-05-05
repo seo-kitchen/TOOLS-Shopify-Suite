@@ -145,7 +145,7 @@ def _to_hextom_excel(rows: list[dict]) -> bytes:
 # ── Render ────────────────────────────────────────────────────────────────────
 
 def render() -> None:
-    st.subheader("🌐 Collectie SEO teksten")
+    st.subheader("Collectie SEO teksten")
     st.caption(
         "Bekijk en verbeter de meta title + description van collectiepagina's. "
         f"Regels: title ≤{TITLE_MAX} tekens · description {DESC_MIN}–{DESC_MAX} tekens. "

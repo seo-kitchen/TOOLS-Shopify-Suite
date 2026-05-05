@@ -74,7 +74,7 @@ def _log_lines_widget():
 # ── Render ────────────────────────────────────────────────────────────────────
 
 def render() -> None:
-    st.subheader("📦 Nieuwe producten toevoegen")
+    st.subheader("Nieuwe producten toevoegen")
     st.caption(
         "Volg de vijf stappen van boven naar beneden. "
         "Elke stap toont de live status vanuit Supabase. "
