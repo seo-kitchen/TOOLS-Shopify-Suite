@@ -131,66 +131,133 @@ def _build_hextom_excel(rows: list[dict]) -> bytes:
     return buf.getvalue()
 
 
-@st.cache_data(ttl=60, show_spinner=False)
-def _load(vendor: str, shopify_status: str, zoek: str, limit: int) -> list[dict]:
-    sb = _get_sb()
+def _shopify_producten(vendor: str, shopify_status: str, zoek: str, limit: int) -> list[dict]:
+    """Haal producten op via Shopify REST API — werkt voor alle statussen."""
+    import requests
+    store = os.getenv("SHOPIFY_STORE", "")
+    token = os.getenv("SHOPIFY_ACCESS_TOKEN", "")
+    if not store or not token:
+        raise RuntimeError("SHOPIFY_STORE of SHOPIFY_ACCESS_TOKEN ontbreekt in de environment variables.")
 
-    # Stap 1: ophalen uit shopify_meta_audit (primaire bron)
-    q = sb.table("shopify_meta_audit").select(
-        "handle,product_title,vendor,product_type,product_status,"
-        "price,tags,current_meta_title,current_meta_description,"
-        "title_status,desc_status,has_image,image_count"
-    )
-    if vendor != "Alle":
-        q = q.eq("vendor", vendor)
+    base    = f"https://{store}/admin/api/2026-04"
+    headers = {"X-Shopify-Access-Token": token}
+    fields  = "id,title,handle,vendor,product_type,status,tags,variants,images"
+
+    params: dict = {"limit": 250, "fields": fields}
     if shopify_status != "Alle":
-        q = q.eq("product_status", shopify_status)
-    if zoek:
-        q = q.or_(f"handle.ilike.%{zoek}%,product_title.ilike.%{zoek}%")
+        params["status"] = shopify_status
+    if vendor != "Alle":
+        params["vendor"] = vendor
 
-    audit_rows = q.order("vendor").limit(limit).execute().data or []
-    if not audit_rows:
+    rows: list[dict] = []
+    url = f"{base}/products.json"
+
+    while url and len(rows) < limit:
+        r = requests.get(url, headers=headers, params=params, timeout=15)
+        if not r.ok:
+            raise RuntimeError(f"Shopify API fout {r.status_code}: {r.text[:200]}")
+        products = r.json().get("products", [])
+        for p in products:
+            variant  = p.get("variants", [{}])[0] if p.get("variants") else {}
+            image    = p.get("images", [{}])[0] if p.get("images") else {}
+            rows.append({
+                "shopify_id":    p.get("id", ""),
+                "handle":        p.get("handle", ""),
+                "product_title": p.get("title", ""),
+                "vendor":        p.get("vendor", ""),
+                "product_type":  p.get("product_type", ""),
+                "product_status": p.get("status", ""),
+                "tags":          p.get("tags", ""),
+                "sku":           variant.get("sku", ""),
+                "ean_shopify":   variant.get("barcode", ""),
+                "price":         variant.get("price", ""),
+                "has_image":     bool(image),
+                "photo_packshot_1": image.get("src", "") if image else "",
+            })
+        # Volgende pagina via Link-header (cursor paginatie)
+        link = r.headers.get("Link", "")
+        next_url = None
+        for part in link.split(","):
+            if 'rel="next"' in part:
+                next_url = part.split(";")[0].strip().strip("<>")
+                break
+        url = next_url
+        params = {}  # params zitten al in de next URL
+
+    # Zoekfilter (Shopify API ondersteunt geen vrije tekst)
+    if zoek:
+        zoek_l = zoek.lower()
+        rows = [r for r in rows if zoek_l in r.get("handle", "").lower()
+                or zoek_l in r.get("product_title", "").lower()
+                or zoek_l in r.get("sku", "").lower()]
+
+    return rows[:limit]
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _load(vendor: str, shopify_status: str, zoek: str, limit: int) -> list[dict]:
+    """
+    Primaire bron: Shopify API (alle statussen: active, archived, draft).
+    Verrijkt met Supabase (curated-data, pipeline-status, foto's).
+    """
+    # Stap 1: Shopify API
+    shopify_rows = _shopify_producten(vendor, shopify_status, zoek, limit)
+    if not shopify_rows:
         return []
 
-    handles = [r["handle"] for r in audit_rows if r.get("handle")]
+    handles = [r["handle"] for r in shopify_rows if r.get("handle")]
+    skus    = [r["sku"] for r in shopify_rows if r.get("sku")]
 
-    # Stap 2: verrijk met products_curated (NL-titel, categorie, meta_description verbeterd)
-    curated_by_handle: dict[str, dict] = {}
+    sb = _get_sb()
+
+    # Stap 2: verrijk met shopify_meta_audit (SEO-titels, description)
+    audit_by_handle: dict[str, dict] = {}
     if handles:
         try:
-            cur_res = sb.table("products_curated").select(
-                "handle,sku,supplier,fase,product_title_nl,hoofdcategorie,"
-                "subcategorie,sub_subcategorie,collectie,tags,materiaal_nl,"
-                "kleur_nl,meta_title,meta_description,verkoopprijs,inkoopprijs,pipeline_status"
+            res = sb.table("shopify_meta_audit").select(
+                "handle,current_meta_title,current_meta_description,title_status,desc_status"
             ).in_("handle", handles[:500]).execute().data or []
-            curated_by_handle = {r["handle"]: r for r in cur_res}
+            audit_by_handle = {r["handle"]: r for r in res}
         except Exception:
             pass
 
-    # Stap 3: verrijk met products_raw (foto's, EAN, afmetingen) via SKU
-    skus = [c["sku"] for c in curated_by_handle.values() if c.get("sku")]
+    # Stap 3: verrijk met products_curated (NL-titel, categorie, pipeline-status)
+    curated_by_handle: dict[str, dict] = {}
+    if handles:
+        try:
+            res = sb.table("products_curated").select(
+                "handle,sku,supplier,fase,product_title_nl,hoofdcategorie,"
+                "collectie,materiaal_nl,kleur_nl,meta_description,"
+                "verkoopprijs,inkoopprijs,pipeline_status"
+            ).in_("handle", handles[:500]).execute().data or []
+            curated_by_handle = {r["handle"]: r for r in res}
+        except Exception:
+            pass
+
+    # Stap 4: verrijk met products_raw (foto's, EAN, afmetingen) via SKU
     raw_by_sku: dict[str, dict] = {}
     if skus:
         try:
-            raw_res = sb.table("products_raw").select(
-                "sku,ean_shopify,ean_piece,designer,"
-                "hoogte_cm,lengte_cm,breedte_cm,"
+            res = sb.table("products_raw").select(
+                "sku,ean_piece,designer,hoogte_cm,lengte_cm,breedte_cm,"
                 "photo_packshot_1,photo_packshot_2,photo_packshot_3,"
                 "photo_packshot_4,photo_packshot_5,"
                 "photo_lifestyle_1,photo_lifestyle_2,photo_lifestyle_3,"
                 "photo_lifestyle_4,photo_lifestyle_5"
             ).in_("sku", skus[:500]).execute().data or []
-            raw_by_sku = {r["sku"]: r for r in raw_res}
+            raw_by_sku = {r["sku"]: r for r in res}
         except Exception:
             pass
 
-    # Samenvoegen
+    # Samenvoegen (Shopify als basis, Supabase voegt toe)
     merged = []
-    for a in audit_rows:
-        handle = a.get("handle", "")
-        cur = curated_by_handle.get(handle, {})
-        raw = raw_by_sku.get(cur.get("sku", ""), {})
-        merged.append({**a, **raw, **cur})
+    for s in shopify_rows:
+        handle = s.get("handle", "")
+        sku    = s.get("sku", "")
+        audit  = audit_by_handle.get(handle, {})
+        cur    = curated_by_handle.get(handle, {})
+        raw    = raw_by_sku.get(sku, {})
+        merged.append({**s, **raw, **audit, **cur})
 
     return merged
 
