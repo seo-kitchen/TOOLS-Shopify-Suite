@@ -51,7 +51,7 @@ DESC_MAX = 155
 
 # ── Data ophalen ──────────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=180, show_spinner=False)
 def _shopify_active_count() -> dict:
     """Aantal actieve producten in Shopify (via REST API)."""
     try:
@@ -74,7 +74,7 @@ def _shopify_active_count() -> dict:
         return {"error": str(e)}
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def _sku_by_handle() -> dict[str, str]:
     """Bouw een handle → SKU mapping. Primair uit shopify_meta_audit, fallback op shopify_sync."""
     try:
@@ -95,7 +95,7 @@ def _sku_by_handle() -> dict[str, str]:
         return {}
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=180, show_spinner=False)
 def _meta_detail(probleem: str) -> list[dict]:
     """
     Haalt de concrete producten op voor een specifiek meta-probleem.
@@ -133,7 +133,7 @@ def _meta_detail(probleem: str) -> list[dict]:
         return []
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=180, show_spinner=False)
 def _meta_problemen_actief() -> dict:
     """Meta-problemen voor ACTIEVE producten uit shopify_meta_audit (nieuwe Supabase)."""
     try:
@@ -169,7 +169,7 @@ def _meta_problemen_actief() -> dict:
         return {"error": str(e)}
 
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def _foto_status() -> dict:
     """Foto-status voor actieve producten uit shopify_meta_audit."""
     try:
@@ -197,7 +197,7 @@ def _foto_status() -> dict:
         return {"gesynchroniseerd": False, "error": str(e)}
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=180, show_spinner=False)
 def _foto_detail(probleem: str) -> list[dict]:
     """Concrete producten voor een foto-probleem."""
     try:
@@ -225,7 +225,7 @@ def _foto_detail(probleem: str) -> list[dict]:
         return []
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=120, show_spinner=False)
 def _pipeline_status() -> dict:
     """Actieve pipeline-producten per status (raw/review = aandacht nodig)."""
     try:

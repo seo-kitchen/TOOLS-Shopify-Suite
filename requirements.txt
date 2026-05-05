@@ -6,5 +6,4 @@ openpyxl==3.1.5
 psycopg2-binary==2.9.12
 python-dotenv==1.2.2
 requests==2.32.5
-watchdog==6.0.0
 Pillow==11.2.1

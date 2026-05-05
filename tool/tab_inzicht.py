@@ -84,7 +84,7 @@ def _seo_issues(title: str | None, desc: str | None) -> list[str]:
 
 # ── Data-fetchers ─────────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def _load_meta_audit() -> list[dict]:
     try:
         sb = _get_sb_new()
@@ -93,7 +93,13 @@ def _load_meta_audit() -> list[dict]:
             return []
         res = (
             sb.table("shopify_meta_audit")
-            .select("*")
+            .select(
+                "shopify_product_id,handle,product_title,vendor,product_type,"
+                "product_status,price,tags,published_at,"
+                "current_meta_title,current_meta_description,"
+                "current_title_length,current_desc_length,"
+                "title_status,desc_status,has_image,has_description"
+            )
             .execute()
         )
         return res.data or []
@@ -102,7 +108,7 @@ def _load_meta_audit() -> list[dict]:
         return []
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def _load_collections() -> list[dict]:
     """Haalt collecties op via Shopify REST API."""
     try:

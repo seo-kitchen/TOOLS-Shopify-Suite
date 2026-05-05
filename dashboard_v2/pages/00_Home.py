@@ -13,7 +13,7 @@ page_header(
 )
 
 
-@st.cache_data(ttl=60, show_spinner="Tellen in Supabase…")
+@st.cache_data(ttl=300, show_spinner="Tellen in Supabase…")
 def _counts():
     sb = get_supabase()
     total = sb.table("seo_products").select("id", count="exact").execute().count or 0
