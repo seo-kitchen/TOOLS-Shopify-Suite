@@ -52,23 +52,21 @@ TOOLS = [
     {
         "name": "zoek_pipeline",
         "description": (
-            "Zoek producten in seo_products — onze INTERNE pipeline database. "
-            "Bevat ALLE producten die we hebben geïmporteerd, inclusief gearchiveerde, "
-            "nog niet live, en producten in bewerking. "
-            "Gebruik dit voor vragen over: welke producten zijn gearchiveerd, "
-            "hoeveel producten per merk, pipeline-status, prijzen, categorieën. "
-            "status_shopify waarden: 'actief', 'archief', 'nieuw', 'onbekend' (Nederlands). "
-            "merk waarden: 'Serax', 'Pottery Pots', 'Printworks', 'S&P/Bonbistro'. "
-            "status waarden: 'raw', 'matched', 'ready', 'review', 'exported'."
+            "Zoek producten in products_curated — onze INTERNE pipeline database. "
+            "Bevat alle verwerkte producten. "
+            "Voor 'gearchiveerd': gebruik shopify_status='archived' (Engels). "
+            "supplier = het merk/leverancier (bijv. 'Pottery Pots', 'Serax'). "
+            "pipeline_status waarden: 'raw', 'matched', 'ready', 'review', 'exported'. "
+            "shopify_status waarden (uit shopify_meta_audit): 'active', 'archived', 'draft'."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "merk":                  {"type": "string", "description": "Leverancier/merk (gedeeltelijk, case-insensitive)"},
-                "status_shopify":        {"type": "string", "enum": ["actief", "archief", "nieuw", "onbekend"]},
-                "status":                {"type": "string", "enum": ["raw", "matched", "ready", "review", "exported"]},
+                "supplier":              {"type": "string", "description": "Leverancier/merk (gedeeltelijk, case-insensitive)"},
+                "shopify_status":        {"type": "string", "enum": ["active", "archived", "draft"], "description": "Shopify-status — archived = gearchiveerd"},
+                "pipeline_status":       {"type": "string", "enum": ["raw", "matched", "ready", "review", "exported"]},
                 "fase":                  {"type": "string", "description": "Fase nummer: '1' t/m '6'"},
-                "naam_bevat":            {"type": "string", "description": "Zoek in product_name_raw en product_title_nl"},
+                "titel_bevat":           {"type": "string", "description": "Zoek in product_title_nl"},
                 "hoofdcategorie_bevat":  {"type": "string", "description": "Zoek in hoofdcategorie"},
                 "limit":                 {"type": "integer", "default": 200},
             },
@@ -115,12 +113,13 @@ Je hebt toegang tot twee databases via tools.
 
 ## Welke tool gebruik je wanneer?
 
-**zoek_pipeline** (seo_products — onze interne database):
+**zoek_pipeline** (products_curated — onze interne database):
 - Vragen over gearchiveerde / niet-live producten
 - Vragen over hoeveel producten er zijn per merk, status, fase
 - Vragen over inkoopprijs, verkoopprijs, categorieën
-- Altijd als de gebruiker vraagt naar 'archief' of 'gearchiveerd' → gebruik status_shopify='archief'
-- Altijd als de gebruiker vraagt naar een merk (Pottery Pots, Serax, etc.) zonder specifieke SEO-vraag
+- Altijd als de gebruiker vraagt naar 'archief' of 'gearchiveerd' → gebruik shopify_status='archived' (Engels!)
+- supplier = het merk (bijv. 'Pottery Pots', 'Serax')
+- Altijd als de gebruiker vraagt naar een merk zonder specifieke SEO-vraag
 
 **zoek_producten** (shopify_meta_audit — live Shopify data):
 - Vragen over meta titles, meta descriptions, SEO-kwaliteit
@@ -222,31 +221,48 @@ def _uitvoer_zoek(params: dict) -> list[dict]:
 
 
 def _uitvoer_zoek_pipeline(params: dict) -> list[dict]:
-    sb = _sb_pipeline()
+    sb = _sb()
     if not sb:
         return []
-    q = sb.table("seo_products").select(
-        "id,sku,ean_shopify,product_name_raw,product_title_nl,"
-        "merk,fase,status,status_shopify,"
-        "hoofdcategorie,sub_subcategorie,"
-        "rrp_stuk_eur,rrp_gb_eur"
+
+    # Als shopify_status filter: haal handles op uit shopify_meta_audit
+    handle_whitelist: list[str] | None = None
+    if params.get("shopify_status"):
+        q_audit = sb.table("shopify_meta_audit").select("handle,vendor") \
+            .eq("product_status", params["shopify_status"])
+        if params.get("supplier"):
+            q_audit = q_audit.ilike("vendor", f"%{params['supplier']}%")
+        audit_rows = q_audit.limit(1000).execute().data or []
+        handle_whitelist = [r["handle"] for r in audit_rows if r.get("handle")]
+        if not handle_whitelist:
+            return []
+
+    q = sb.table("products_curated").select(
+        "id,sku,supplier,fase,product_title_nl,handle,"
+        "hoofdcategorie,sub_subcategorie,pipeline_status,"
+        "verkoopprijs,meta_description"
     )
-    if params.get("merk"):
-        q = q.ilike("merk", f"%{params['merk']}%")
-    if params.get("status_shopify"):
-        q = q.eq("status_shopify", params["status_shopify"])
-    if params.get("status"):
-        q = q.eq("status", params["status"])
+    if params.get("supplier") and not params.get("shopify_status"):
+        q = q.ilike("supplier", f"%{params['supplier']}%")
+    if params.get("pipeline_status"):
+        q = q.eq("pipeline_status", params["pipeline_status"])
     if params.get("fase"):
         q = q.eq("fase", str(params["fase"]))
-    if params.get("naam_bevat"):
-        term = params["naam_bevat"]
-        q = q.or_(f"product_name_raw.ilike.%{term}%,product_title_nl.ilike.%{term}%")
+    if params.get("titel_bevat"):
+        q = q.ilike("product_title_nl", f"%{params['titel_bevat']}%")
     if params.get("hoofdcategorie_bevat"):
         q = q.ilike("hoofdcategorie", f"%{params['hoofdcategorie_bevat']}%")
+    if handle_whitelist is not None:
+        q = q.in_("handle", handle_whitelist[:500])
 
     limit = min(int(params.get("limit", 200)), 500)
-    return q.limit(limit).execute().data or []
+    rows = q.limit(limit).execute().data or []
+
+    # Voeg shopify_status toe als label
+    if params.get("shopify_status"):
+        for r in rows:
+            r["shopify_status"] = params["shopify_status"]
+    return rows
 
 
 def _uitvoer_update(updates: list[dict]) -> int:
