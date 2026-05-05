@@ -20,8 +20,25 @@ from pathlib import Path
 
 import streamlit as st
 
-from ui.supabase_client import current_user_email, get_supabase
 from client import get_client_id
+
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
+
+def _current_user_email() -> str:
+    return os.getenv("USER_EMAIL") or "chef@seokitchen.nl"
+
+
+@st.cache_resource
+def _get_sb():
+    from supabase import create_client
+    url = os.getenv("SUPABASE_NEW_URL", "")
+    key = os.getenv("SUPABASE_NEW_SERVICE_KEY", "") or os.getenv("SUPABASE_NEW_KEY", "")
+    if not url or not key:
+        return None
+    return create_client(url, key)
 
 TABLE = "seo_notes"
 FALLBACK_FILE = Path(__file__).parent / ".notes_fallback.json"
@@ -39,49 +56,72 @@ LABEL_OPTIES = {v[1]: k for k, v in LABELS.items()}
 # ── Supabase helpers ──────────────────────────────────────────────────────────
 
 def _load_notes(client_id: str, alleen_open: bool) -> list[dict]:
-    try:
-        sb = get_supabase()
-        q = sb.table(TABLE).select("*").eq("client_id", client_id).order("aangemaakt_op", desc=True)
-        if alleen_open:
-            q = q.eq("opgelost", False)
-        res = q.limit(100).execute()
-        return res.data or []
-    except Exception:
-        return _load_fallback(client_id, alleen_open)
+    sb = _get_sb()
+    if sb:
+        try:
+            q = sb.table(TABLE).select("*").eq("client_id", client_id).order("aangemaakt_op", desc=True)
+            if alleen_open:
+                q = q.eq("opgelost", False)
+            return q.limit(100).execute().data or []
+        except Exception:
+            pass
+    return _load_fallback(client_id, alleen_open)
 
 
 def _add_note(client_id: str, tekst: str, label: str, door: str) -> bool:
-    try:
-        sb = get_supabase()
-        sb.table(TABLE).insert({
-            "client_id":     client_id,
-            "tekst":         tekst.strip(),
-            "label":         label,
-            "aangemaakt_op": datetime.utcnow().isoformat(),
-            "aangemaakt_door": door,
-            "opgelost":      False,
-        }).execute()
-        return True
-    except Exception:
-        return _add_fallback(client_id, tekst, label, door)
+    sb = _get_sb()
+    if sb:
+        try:
+            sb.table(TABLE).insert({
+                "client_id":       client_id,
+                "tekst":           tekst.strip(),
+                "label":           label,
+                "aangemaakt_op":   datetime.utcnow().isoformat(),
+                "aangemaakt_door": door,
+                "opgelost":        False,
+            }).execute()
+            return True
+        except Exception:
+            pass
+    return _add_fallback(client_id, tekst, label, door)
 
 
-def _toggle_opgelost(note_id: str, opgelost: bool) -> bool:
+def _toggle_opgelost(note_id: str | int, opgelost: bool) -> bool:
+    sb = _get_sb()
+    if sb:
+        try:
+            update: dict = {"opgelost": opgelost}
+            if opgelost:
+                update["opgelost_op"] = datetime.utcnow().isoformat()
+            sb.table(TABLE).update(update).eq("id", note_id).execute()
+            return True
+        except Exception:
+            pass
+    # fallback: update JSON
     try:
-        sb = get_supabase()
-        update: dict = {"opgelost": opgelost}
-        if opgelost:
-            update["opgelost_op"] = datetime.utcnow().isoformat()
-        sb.table(TABLE).update(update).eq("id", note_id).execute()
+        data = json.loads(FALLBACK_FILE.read_text(encoding="utf-8")) if FALLBACK_FILE.exists() else []
+        for n in data:
+            if str(n.get("id")) == str(note_id):
+                n["opgelost"] = opgelost
+        FALLBACK_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         return True
     except Exception:
         return False
 
 
-def _delete_note(note_id: str) -> bool:
+def _delete_note(note_id: str | int) -> bool:
+    sb = _get_sb()
+    if sb:
+        try:
+            sb.table(TABLE).delete().eq("id", note_id).execute()
+            return True
+        except Exception:
+            pass
+    # fallback: verwijder uit JSON
     try:
-        sb = get_supabase()
-        sb.table(TABLE).delete().eq("id", note_id).execute()
+        data = json.loads(FALLBACK_FILE.read_text(encoding="utf-8")) if FALLBACK_FILE.exists() else []
+        data = [n for n in data if str(n.get("id")) != str(note_id)]
+        FALLBACK_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         return True
     except Exception:
         return False
@@ -132,7 +172,7 @@ def render() -> None:
     )
 
     client_id = get_client_id()
-    user = current_user_email()
+    user = _current_user_email()
 
     # ── Nieuwe notitie ────────────────────────────────────────────────────────
     with st.form("note_form", clear_on_submit=True):

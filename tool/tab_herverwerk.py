@@ -1,8 +1,7 @@
 """Tab — Archief herverwerken.
 
-Haalt producten op uit products_curated (+ products_raw voor foto's/EAN),
-gecombineerd met shopify_meta_audit voor de Shopify-status (active/archived/draft).
-Selecteer een subset en herstart de pipeline of exporteer direct naar Hextom.
+Primaire bron: shopify_meta_audit (heeft ALLE Shopify-producten met hun status).
+Verrijkt met products_curated (pipeline-data) en products_raw (foto's, EAN, afmetingen).
 """
 from __future__ import annotations
 
@@ -29,11 +28,10 @@ def _get_sb():
     return create_client(url, key)
 
 
-LEVERANCIERS = ["Pottery Pots", "Serax", "Printworks", "Salt & Pepper"]
+LEVERANCIERS = ["Pottery Pots", "Serax", "Salt & Pepper", "Printworks",
+                "BONBISTRO", "ONA", "Urban Nature Culture"]
 SHOPIFY_STATUSSEN = ["archived", "active", "draft"]
-PIPELINE_STATUSSEN = ["raw", "matched", "ready", "review", "exported"]
 
-# Hextom-kolomstructuur
 HEXTOM_COLUMNS = [
     "Variant SKU", "", "", "Product Handle", "Product Title",
     "Product Vendor", "Product Type", "Variant Barcode", "Variant Price",
@@ -69,11 +67,9 @@ def _clean_decimal(value) -> str:
         return s
 
 
-def _build_hextom_excel(merged: list[dict]) -> bytes:
-    """Bouw Hextom Excel uit gemergde curated+raw records."""
+def _build_hextom_excel(rows: list[dict]) -> bytes:
     wb = openpyxl.Workbook()
     ws = wb.active
-
     header_fill = PatternFill("solid", fgColor="1F4E79")
     header_font = Font(bold=True, color="FFFFFF", size=10)
     for col_idx, col_name in enumerate(HEXTOM_COLUMNS, start=1):
@@ -82,18 +78,18 @@ def _build_hextom_excel(merged: list[dict]) -> bytes:
         cell.font = header_font
         cell.alignment = Alignment(horizontal="center")
 
-    for row_idx, p in enumerate(merged, start=2):
+    for row_idx, p in enumerate(rows, start=2):
         row_data = {
             "Variant SKU":                               p.get("sku", ""),
             "":                                          "",
             "Product Handle":                            p.get("handle", ""),
-            "Product Title":                             p.get("product_title_nl", ""),
-            "Product Vendor":                            p.get("supplier", ""),
-            "Product Type":                              p.get("hoofdcategorie", ""),
+            "Product Title":                             p.get("product_title_nl") or p.get("product_title", ""),
+            "Product Vendor":                            p.get("vendor", ""),
+            "Product Type":                              p.get("hoofdcategorie") or p.get("product_type", ""),
             "Variant Barcode":                           str(p.get("ean_shopify", "") or ""),
-            "Variant Price":                             _clean_decimal(p.get("verkoopprijs")),
+            "Variant Price":                             _clean_decimal(p.get("verkoopprijs") or p.get("price")),
             "Variant Cost":                              _clean_decimal(p.get("inkoopprijs")),
-            "Product Description":                       p.get("meta_description", "") or "",
+            "Product Description":                       p.get("meta_description") or p.get("current_meta_description", "") or "",
             "Product Tags":                              p.get("tags", "") or "",
             "Variant Metafield custom.collectie":        p.get("collectie", "") or "",
             "Product Metafield custom.designer":         p.get("designer", "") or "",
@@ -114,10 +110,9 @@ def _build_hextom_excel(merged: list[dict]) -> bytes:
             "photo_lifestyle_5":                         p.get("photo_lifestyle_5", "") or "",
             "Product Metafield custom.ean":              str(p.get("ean_piece", "") or ""),
             "Product Metafield custom.artikelnummer":    p.get("sku", "") or "",
-            "Product Metafield custom.meta_description": p.get("meta_description", "") or "",
+            "Product Metafield custom.meta_description": p.get("meta_description") or p.get("current_meta_description", "") or "",
         }
-        shopify_status = p.get("shopify_status", "")
-        row_fill = STATUS_FILL.get(shopify_status)
+        row_fill = STATUS_FILL.get(p.get("product_status", ""))
         for col_idx, col_name in enumerate(HEXTOM_COLUMNS, start=1):
             value = row_data.get(col_name, "") if col_name else ""
             cell = ws.cell(row=row_idx, column=col_idx, value=value)
@@ -136,118 +131,96 @@ def _build_hextom_excel(merged: list[dict]) -> bytes:
     return buf.getvalue()
 
 
-# ── Data ophalen ──────────────────────────────────────────────────────────────
-
 @st.cache_data(ttl=60, show_spinner=False)
-def _load(supplier: str, shopify_status: str, pipeline_status: str,
-          fase: str, zoek: str, limit: int) -> list[dict]:
+def _load(vendor: str, shopify_status: str, zoek: str, limit: int) -> list[dict]:
     sb = _get_sb()
 
-    # Stap 1: als shopify_status filter → haal handles op uit shopify_meta_audit
-    handle_whitelist: list[str] | None = None
-    if shopify_status != "Alle":
-        q_audit = sb.table("shopify_meta_audit").select("handle,product_status,vendor")
-        q_audit = q_audit.eq("product_status", shopify_status)
-        if supplier != "Alle":
-            q_audit = q_audit.ilike("vendor", f"%{supplier}%")
-        audit_rows = q_audit.limit(2000).execute().data or []
-        handle_whitelist = [r["handle"] for r in audit_rows if r.get("handle")]
-        if not handle_whitelist:
-            return []
-
-    # Stap 2: query products_curated
-    q = sb.table("products_curated").select(
-        "id,sku,raw_id,supplier,fase,product_title_nl,handle,"
-        "hoofdcategorie,subcategorie,sub_subcategorie,"
-        "collectie,tags,materiaal_nl,kleur_nl,"
-        "meta_title,meta_description,verkoopprijs,inkoopprijs,pipeline_status"
+    # Stap 1: ophalen uit shopify_meta_audit (primaire bron)
+    q = sb.table("shopify_meta_audit").select(
+        "handle,product_title,vendor,product_type,product_status,"
+        "price,tags,current_meta_title,current_meta_description,"
+        "title_status,desc_status,has_image,image_count"
     )
-    if supplier != "Alle" and shopify_status == "Alle":
-        q = q.ilike("supplier", f"%{supplier}%")
-    if pipeline_status != "Alle":
-        q = q.eq("pipeline_status", pipeline_status)
-    if fase != "Alle":
-        q = q.eq("fase", fase)
+    if vendor != "Alle":
+        q = q.eq("vendor", vendor)
+    if shopify_status != "Alle":
+        q = q.eq("product_status", shopify_status)
     if zoek:
-        q = q.or_(f"sku.ilike.%{zoek}%,product_title_nl.ilike.%{zoek}%")
-    if handle_whitelist is not None:
-        # filter in batches van 200 (Supabase IN-limiet)
-        q = q.in_("handle", handle_whitelist[:500])
+        q = q.or_(f"handle.ilike.%{zoek}%,product_title.ilike.%{zoek}%")
 
-    curated_rows = q.order("supplier").limit(limit).execute().data or []
-    if not curated_rows:
+    audit_rows = q.order("vendor").limit(limit).execute().data or []
+    if not audit_rows:
         return []
 
+    handles = [r["handle"] for r in audit_rows if r.get("handle")]
+
+    # Stap 2: verrijk met products_curated (NL-titel, categorie, meta_description verbeterd)
+    curated_by_handle: dict[str, dict] = {}
+    if handles:
+        try:
+            cur_res = sb.table("products_curated").select(
+                "handle,sku,supplier,fase,product_title_nl,hoofdcategorie,"
+                "subcategorie,sub_subcategorie,collectie,tags,materiaal_nl,"
+                "kleur_nl,meta_title,meta_description,verkoopprijs,inkoopprijs,pipeline_status"
+            ).in_("handle", handles[:500]).execute().data or []
+            curated_by_handle = {r["handle"]: r for r in cur_res}
+        except Exception:
+            pass
+
     # Stap 3: verrijk met products_raw (foto's, EAN, afmetingen) via SKU
-    skus = [r["sku"] for r in curated_rows if r.get("sku")]
+    skus = [c["sku"] for c in curated_by_handle.values() if c.get("sku")]
     raw_by_sku: dict[str, dict] = {}
     if skus:
-        raw_res = sb.table("products_raw").select(
-            "sku,ean_shopify,ean_piece,designer,kleur_en,"
-            "hoogte_cm,lengte_cm,breedte_cm,"
-            "photo_packshot_1,photo_packshot_2,photo_packshot_3,"
-            "photo_packshot_4,photo_packshot_5,"
-            "photo_lifestyle_1,photo_lifestyle_2,photo_lifestyle_3,"
-            "photo_lifestyle_4,photo_lifestyle_5"
-        ).in_("sku", skus[:500]).execute().data or []
-        raw_by_sku = {r["sku"]: r for r in raw_res}
+        try:
+            raw_res = sb.table("products_raw").select(
+                "sku,ean_shopify,ean_piece,designer,"
+                "hoogte_cm,lengte_cm,breedte_cm,"
+                "photo_packshot_1,photo_packshot_2,photo_packshot_3,"
+                "photo_packshot_4,photo_packshot_5,"
+                "photo_lifestyle_1,photo_lifestyle_2,photo_lifestyle_3,"
+                "photo_lifestyle_4,photo_lifestyle_5"
+            ).in_("sku", skus[:500]).execute().data or []
+            raw_by_sku = {r["sku"]: r for r in raw_res}
+        except Exception:
+            pass
 
-    # Stap 4: haal shopify_status op via handle (voor kleurcodering export)
-    handles = [r["handle"] for r in curated_rows if r.get("handle")]
-    shopify_status_by_handle: dict[str, str] = {}
-    if handles and shopify_status == "Alle":
-        audit_res = sb.table("shopify_meta_audit").select("handle,product_status") \
-            .in_("handle", handles[:500]).execute().data or []
-        shopify_status_by_handle = {r["handle"]: r.get("product_status", "") for r in audit_res}
-
-    # Stap 5: samenvoegen
+    # Samenvoegen
     merged = []
-    for c in curated_rows:
-        raw = raw_by_sku.get(c.get("sku", ""), {})
-        sh_status = (
-            shopify_status if shopify_status != "Alle"
-            else shopify_status_by_handle.get(c.get("handle", ""), "onbekend")
-        )
-        merged.append({**c, **raw, "shopify_status": sh_status})
+    for a in audit_rows:
+        handle = a.get("handle", "")
+        cur = curated_by_handle.get(handle, {})
+        raw = raw_by_sku.get(cur.get("sku", ""), {})
+        merged.append({**a, **raw, **cur})
 
     return merged
 
 
-# ── Render ────────────────────────────────────────────────────────────────────
-
 def render() -> None:
     st.subheader("♻️ Archief herverwerken")
     st.caption(
-        "Selecteer producten rechtstreeks uit de database — geen Hextom-export nodig. "
-        "Filter op merk en Shopify-status, selecteer een subset, en exporteer of herstart."
+        "Selecteer producten direct uit Shopify-data — geen Hextom-export nodig. "
+        "Filter op merk en status, selecteer, en exporteer of herstart de pipeline."
     )
 
-    # ── Filters ───────────────────────────────────────────────────────────────
-    f1, f2, f3, f4 = st.columns([2, 2, 1, 2])
+    f1, f2, f3 = st.columns([2, 2, 3])
     with f1:
-        supplier = st.selectbox("Merk / Leverancier", ["Alle"] + LEVERANCIERS, key="hv_sup")
+        vendor = st.selectbox("Merk", ["Alle"] + LEVERANCIERS, key="hv_vendor")
     with f2:
         shopify_status = st.selectbox(
             "Status in Shopify", ["Alle"] + SHOPIFY_STATUSSEN, index=2, key="hv_sh"
         )  # default: archived
     with f3:
-        fase = st.selectbox("Fase", ["Alle", "1", "2", "3", "4", "5", "6"], key="hv_fase")
-    with f4:
-        zoek = st.text_input("Zoek (SKU / titel)", placeholder="bijv. B4020040", key="hv_zoek")
+        zoek = st.text_input("Zoek (handle / productnaam)", placeholder="bijv. pottery-pots-vaas", key="hv_zoek")
 
-    f5, f6 = st.columns([2, 2])
-    with f5:
-        pipeline_status = st.selectbox(
-            "Pipeline-status", ["Alle"] + PIPELINE_STATUSSEN, key="hv_ps"
-        )
-    with f6:
+    col_lim, col_btn, col_ref = st.columns([2, 1, 1])
+    with col_lim:
         limit = st.number_input("Max te laden", 50, 2000, 500, 50, key="hv_limit")
-
-    col_btn, col_ref = st.columns([1, 1])
     with col_btn:
+        st.caption("&nbsp;")
         laden = st.button("🔍 Laad producten", type="primary", key="hv_laden")
     with col_ref:
-        if st.button("🔄 Ververs cache", key="hv_refresh"):
+        st.caption("&nbsp;")
+        if st.button("🔄 Ververs", key="hv_refresh"):
             _load.clear()
             st.rerun()
 
@@ -257,142 +230,122 @@ def render() -> None:
         st.info("Stel filters in en klik **Laad producten** om te beginnen.")
         return
 
-    # ── Laden ─────────────────────────────────────────────────────────────────
     with st.spinner("Ophalen uit Supabase..."):
         try:
-            rows = _load(supplier, shopify_status, pipeline_status,
-                         fase, zoek.strip(), int(limit))
+            rows = _load(vendor, shopify_status, zoek.strip(), int(limit))
         except Exception as e:
-            st.error(f"❌ Fout bij ophalen: {e}")
+            st.error(f"❌ Fout: {e}")
             return
 
     if not rows:
-        st.warning("Geen producten gevonden met deze filters.")
+        st.warning(f"Geen producten gevonden — vendor='{vendor}', status='{shopify_status}'.")
         return
 
-    # ── Metrics ───────────────────────────────────────────────────────────────
     df = pd.DataFrame(rows)
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Gevonden", len(rows))
-    m2.metric("Met NL-titel", int(df["product_title_nl"].notna().sum()))
-    m3.metric("Met meta-desc", int(df["meta_description"].notna().sum()))
-    m4.metric("Met foto", int(df["photo_packshot_1"].notna().sum()) if "photo_packshot_1" in df else 0)
+    m2.metric("Met NL-titel", int(df["product_title_nl"].notna().sum()) if "product_title_nl" in df else 0)
+    m3.metric("Met meta-desc", int(df["current_meta_description"].notna().sum()) if "current_meta_description" in df else 0)
+    m4.metric("Met foto", int(df["has_image"].sum()) if "has_image" in df else 0)
 
-    # ── Tabel ─────────────────────────────────────────────────────────────────
-    TOON = ["sku", "product_title_nl", "supplier", "fase",
-            "pipeline_status", "shopify_status", "hoofdcategorie", "verkoopprijs"]
+    TOON = ["handle", "product_title", "vendor", "product_status",
+            "pipeline_status", "hoofdcategorie", "price"]
     for col in TOON:
         if col not in df.columns:
             df[col] = None
 
     edited = st.data_editor(
-        df[["id"] + TOON].assign(_select=False),
+        df[["handle"] + TOON[1:]].assign(_select=False),
         column_config={
             "_select":         st.column_config.CheckboxColumn("✔", default=False, width="small"),
-            "id":              st.column_config.NumberColumn("ID", disabled=True, width="small"),
-            "sku":             st.column_config.TextColumn("SKU", disabled=True, width="small"),
-            "product_title_nl": st.column_config.TextColumn("Titel NL", disabled=True, width="large"),
-            "supplier":        st.column_config.TextColumn("Merk", disabled=True, width="small"),
-            "fase":            st.column_config.TextColumn("Fase", disabled=True, width="small"),
+            "handle":          st.column_config.TextColumn("Handle", disabled=True, width="medium"),
+            "product_title":   st.column_config.TextColumn("Titel (Shopify)", disabled=True, width="large"),
+            "vendor":          st.column_config.TextColumn("Merk", disabled=True, width="small"),
+            "product_status":  st.column_config.TextColumn("Shopify", disabled=True, width="small"),
             "pipeline_status": st.column_config.TextColumn("Pipeline", disabled=True, width="small"),
-            "shopify_status":  st.column_config.TextColumn("Shopify", disabled=True, width="small"),
             "hoofdcategorie":  st.column_config.TextColumn("Categorie", disabled=True, width="medium"),
-            "verkoopprijs":    st.column_config.NumberColumn("Prijs", disabled=True, width="small", format="€ %.2f"),
+            "price":           st.column_config.NumberColumn("Prijs", disabled=True, width="small", format="€ %.2f"),
         },
-        column_order=["_select", "id", "sku", "product_title_nl", "supplier",
-                      "fase", "pipeline_status", "shopify_status", "hoofdcategorie", "verkoopprijs"],
+        column_order=["_select", "handle", "product_title", "vendor",
+                      "product_status", "pipeline_status", "hoofdcategorie", "price"],
         hide_index=True,
-        disabled=["id"] + TOON,
+        disabled=["handle"] + TOON[1:],
         width="stretch",
         key="hv_editor",
     )
 
-    selected_ids = edited.loc[edited["_select"], "id"].tolist()
-    selected_rows = [r for r in rows if r["id"] in selected_ids]
-    st.caption(f"**{len(selected_ids)} van {len(rows)} geselecteerd**")
+    selected_handles = edited.loc[edited["_select"], "handle"].tolist()
+    selected_rows = [r for r in rows if r.get("handle") in selected_handles]
+    st.caption(f"**{len(selected_handles)} van {len(rows)} geselecteerd**")
 
-    if not selected_ids:
+    if not selected_handles:
         st.info("Selecteer producten via de checkboxes hierboven.")
         return
 
     st.divider()
-    st.markdown(f"### ⚡ Acties voor {len(selected_ids)} geselecteerde producten")
+    st.markdown(f"### ⚡ Acties voor {len(selected_handles)} geselecteerde producten")
 
     a1, a2, a3 = st.columns(3)
 
-    # ── A: Reset pipeline-status ───────────────────────────────────────────────
     with a1:
-        st.markdown("**A — Klaar voor Transform**")
-        st.caption("Reset pipeline_status naar `matched` zodat ze in Transform verschijnen.")
-        nieuwe_ps = st.selectbox(
-            "Nieuwe pipeline-status",
-            ["matched", "raw", "ready"],
-            key="hv_new_ps",
-        )
-        if st.button(f"🔄 Reset {len(selected_ids)} → {nieuwe_ps}", type="primary", key="hv_reset"):
-            try:
-                sb = _get_sb()
-                sb.table("products_curated").update({"pipeline_status": nieuwe_ps}) \
-                  .in_("id", selected_ids).execute()
-                _load.clear()
-                st.success(
-                    f"✅ {len(selected_ids)} producten op `{nieuwe_ps}` gezet. "
-                    "Ga naar **Transform** voor AI-titels en descriptions."
-                )
-            except Exception as e:
-                st.error(f"Fout: {e}")
-
-    # ── B: Hextom export ──────────────────────────────────────────────────────
-    with a2:
-        st.markdown("**B — Exporteer naar Hextom**")
-        st.caption("Exporteer direct als Hextom Excel (voor complete producten).")
-        compleet = sum(
-            1 for r in selected_rows
-            if r.get("product_title_nl") and r.get("meta_description") and r.get("hoofdcategorie")
-        )
-        onvolledig = len(selected_ids) - compleet
-        if onvolledig:
-            st.warning(f"⚠️ {onvolledig} producten missen titel / meta / categorie.")
-
-        if st.button(f"📥 Download {len(selected_ids)} als Hextom Excel", key="hv_export"):
+        st.markdown("**A — Exporteer naar Hextom**")
+        st.caption("Download als Hextom Excel met beschikbare data.")
+        compleet = sum(1 for r in selected_rows if r.get("handle") and r.get("product_title"))
+        if st.button(f"📥 Download {len(selected_handles)} als Hextom Excel", key="hv_export"):
             with st.spinner("Excel bouwen..."):
                 xlsx = _build_hextom_excel(selected_rows)
-            sup_label = supplier.replace(" ", "_").replace("/", "-")
+            vendor_label = vendor.replace(" ", "_").replace("/", "-")
             sh_label = shopify_status if shopify_status != "Alle" else "mix"
             st.download_button(
-                label=f"💾 Download ({len(selected_ids)} producten)",
+                label=f"💾 Download ({len(selected_handles)} producten)",
                 data=xlsx,
-                file_name=f"hextom_{sup_label}_{sh_label}_{len(selected_ids)}st.xlsx",
+                file_name=f"hextom_{vendor_label}_{sh_label}_{len(selected_handles)}st.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="hv_dl",
             )
 
-    # ── C: Naar Transform ─────────────────────────────────────────────────────
+    with a2:
+        st.markdown("**B — Reset pipeline-status**")
+        st.caption("Alleen voor producten die al in products_curated staan.")
+        nieuwe_ps = st.selectbox("Nieuwe status", ["matched", "raw", "ready"], key="hv_new_ps")
+        curated_ids = [r["id"] for r in selected_rows if r.get("id") and r.get("pipeline_status")]
+        if curated_ids:
+            if st.button(f"🔄 Reset {len(curated_ids)} → {nieuwe_ps}", type="primary", key="hv_reset"):
+                try:
+                    sb = _get_sb()
+                    sb.table("products_curated").update({"pipeline_status": nieuwe_ps}) \
+                      .in_("id", curated_ids).execute()
+                    _load.clear()
+                    st.success(f"✅ {len(curated_ids)} producten op `{nieuwe_ps}` gezet.")
+                except Exception as e:
+                    st.error(f"Fout: {e}")
+        else:
+            st.caption("_Geen van de geselecteerde producten zit in products_curated._")
+
     with a3:
         st.markdown("**C — Stuur naar Transform**")
-        st.caption(f"Zet max 25 IDs klaar in de sessie voor het Transform-scherm.")
-        n = min(len(selected_ids), 25)
-        if len(selected_ids) > 25:
-            st.warning(f"Transform heeft een cap van 25 — de eerste {n} worden gestuurd.")
-        if st.button(f"✨ Stuur {n} naar Transform", key="hv_to_transform"):
-            st.session_state["selected_ids"] = selected_ids[:25]
-            st.session_state["transform_from_producten"] = True
-            st.success(f"✅ {n} IDs klaargezet. Ga naar **Transform** in het menu.")
+        st.caption("Zet curated IDs klaar voor het Transform-scherm (max 25).")
+        curated_ids_transform = [r["id"] for r in selected_rows if r.get("id") and r.get("pipeline_status")]
+        n = min(len(curated_ids_transform), 25)
+        if curated_ids_transform:
+            if st.button(f"✨ Stuur {n} naar Transform", key="hv_to_transform"):
+                st.session_state["selected_ids"] = curated_ids_transform[:25]
+                st.session_state["transform_from_producten"] = True
+                st.success(f"✅ {n} IDs klaargezet. Ga naar **Transform** in het menu.")
+        else:
+            st.caption("_Geen pipeline-producten in selectie._")
 
     st.divider()
-
-    # ── Volledigheidscheck ────────────────────────────────────────────────────
-    with st.expander(f"🔍 Volledigheidscheck ({len(selected_ids)} producten)"):
+    with st.expander(f"🔍 Volledigheidscheck ({len(selected_handles)} producten)"):
         check = []
         for r in selected_rows:
             check.append({
-                "SKU":           r.get("sku", "—"),
-                "Titel NL":      "✅" if r.get("product_title_nl") else "❌",
-                "Meta desc":     "✅" if r.get("meta_description") else "❌",
+                "Handle":        r.get("handle", "—"),
+                "SKU":           "✅" if r.get("sku") else "❌",
+                "NL-titel":      "✅" if r.get("product_title_nl") else "❌",
+                "Meta desc":     "✅" if (r.get("meta_description") or r.get("current_meta_description")) else "❌",
                 "Categorie":     "✅" if r.get("hoofdcategorie") else "❌",
-                "Prijs":         "✅" if r.get("verkoopprijs") else "❌",
-                "Foto":          "✅" if r.get("photo_packshot_1") else "❌",
-                "Handle":        "✅" if r.get("handle") else "❌",
-                "Shopify-status": r.get("shopify_status", "—"),
+                "Foto":          "✅" if r.get("photo_packshot_1") or r.get("has_image") else "❌",
+                "In pipeline":   "✅" if r.get("pipeline_status") else "❌",
             })
         st.dataframe(pd.DataFrame(check), hide_index=True, use_container_width=True)
