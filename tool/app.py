@@ -317,18 +317,18 @@ PAGES_DIR = _HERE / "pages"
 
 NAV = {
     "Pipeline": [
-        st.Page(str(PAGES_DIR / "01_Nieuwe.py"),     title="Nieuwe producten",      icon="↑", default=True, url_path="nieuwe"),
-        st.Page(str(PAGES_DIR / "02_Prijzen.py"),    title="Prijzen bijwerken",     icon="€", url_path="prijzen"),
-        st.Page(str(PAGES_DIR / "03_Collectie.py"),  title="Collectie SEO",         icon="○", url_path="collectie"),
-        st.Page(str(PAGES_DIR / "08_Herverwerk.py"), title="Archief herverwerken",  icon="↺", url_path="herverwerk"),
+        st.Page(str(PAGES_DIR / "01_Nieuwe.py"),     title="Nieuwe producten toevoegen", default=True, url_path="nieuwe"),
+        st.Page(str(PAGES_DIR / "02_Prijzen.py"),    title="Prijzen bijwerken",          url_path="prijzen"),
+        st.Page(str(PAGES_DIR / "03_Collectie.py"),  title="Collectie SEO-teksten",      url_path="collectie"),
+        st.Page(str(PAGES_DIR / "08_Herverwerk.py"), title="Archief herverwerken",       url_path="herverwerk"),
     ],
     "Overzicht": [
-        st.Page(str(PAGES_DIR / "04_Status.py"),     title="Status",                icon="◎", url_path="status"),
-        st.Page(str(PAGES_DIR / "05_Inzicht.py"),    title="Inzicht",               icon="◈", url_path="inzicht"),
+        st.Page(str(PAGES_DIR / "04_Status.py"),     title="Status & analyses",          url_path="status"),
+        st.Page(str(PAGES_DIR / "05_Inzicht.py"),    title="Inzicht in producten",       url_path="inzicht"),
     ],
     "Overig": [
-        st.Page(str(PAGES_DIR / "06_Chat.py"),       title="Assistent",             icon="◇", url_path="chat"),
-        st.Page(str(PAGES_DIR / "07_Notities.py"),   title="Notities",              icon="◻", url_path="notities"),
+        st.Page(str(PAGES_DIR / "06_Chat.py"),       title="Data-assistent",             url_path="chat"),
+        st.Page(str(PAGES_DIR / "07_Notities.py"),   title="Notities",                   url_path="notities"),
     ],
 }
 
