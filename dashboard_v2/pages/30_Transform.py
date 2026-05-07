@@ -1,4 +1,4 @@
-"""3. Transform — categoriseer, vertaal, bouw titel + meta. BATCH CAP 25."""
+"""3. Transform — categoriseer, vertaal, bouw titel + meta. BATCH CAP 200."""
 from __future__ import annotations
 
 import sys
@@ -19,7 +19,7 @@ if str(_HERE) not in sys.path:
 from execution.transform import transform_batch  # noqa: E402
 
 
-BATCH_CAP = 25
+BATCH_CAP = 200
 
 
 page_header("✨ 3. Transform", fase=get("fase"))

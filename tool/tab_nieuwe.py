@@ -29,7 +29,7 @@ from export_log import log_export, render_confirm_widget
 LEVERANCIERS = ["Serax", "Pottery Pots", "Printworks", "S&P/Bonbistro"]
 FASES = ["1", "2", "3", "4", "5", "6"]
 
-BATCH_CAP = 25
+BATCH_CAP = 200
 
 
 def _status_counts(fase: str) -> dict:

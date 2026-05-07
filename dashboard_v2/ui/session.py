@@ -21,7 +21,7 @@ DEFAULTS = {
     # Product-ids selected for next pipeline step
     "selected_ids": [],
     # Transform batch cap
-    "transform_batch_cap": 25,
+    "transform_batch_cap": 200,
     # Match queue (twijfelgevallen pending user decision)
     "match_queue": [],
     # Last pipeline run results per step
