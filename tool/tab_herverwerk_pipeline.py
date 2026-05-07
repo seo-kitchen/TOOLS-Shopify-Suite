@@ -1,7 +1,7 @@
 """Herverwerk-pipeline — review & bewerk geselecteerde producten.
 
 Wordt geopend vanuit de Herverwerk-tab. Stap voor stap:
-  1. AI-generatie: NL-titels (Haiku batch) + meta descriptions (Sonnet)
+  1. Volledige pipeline (transform_v2): categorisatie + materiaal/kleur + titel + meta
   2. Review & aanpassen: bewerkbaar overzicht per product
   3. Opslaan in products_curated
   4. Download Hextom Excel
@@ -238,23 +238,122 @@ def render() -> None:
     n = len(rows)
     st.caption(f"{n} producten geladen vanuit Archief herverwerken.")
 
-    # ── Stap 1: AI-generatie ──────────────────────────────────────────────────
+    # ── Stap 1: Volledige pipeline ────────────────────────────────────────────
     if not st.session_state.get("hvp_ai_klaar"):
-        st.markdown("### Stap 1 — AI genereert NL-titels en meta descriptions")
-        kosten = n * 0.002
-        st.caption(
-            f"Haiku vertaalt alle namen in één batch-call. "
-            f"Sonnet schrijft een meta description per product. "
-            f"Geschatte kosten: ~€{kosten:.2f}"
-        )
-        if st.button(f"Start AI-generatie voor {n} producten", type="primary", key="hvp_start_ai"):
-            rows = _genereer_ai(rows)
-            st.session_state["hv_pipeline_rows"] = rows
+        st.markdown("### Stap 1 — Volledige pipeline")
+
+        skus = [r.get("sku") for r in rows if r.get("sku")]
+        skus_met_raw = []
+        skus_zonder_raw = []
+        if skus:
+            try:
+                sb = _get_sb()
+                res = sb.table("products_raw").select("sku").in_("sku", skus[:500]).execute().data or []
+                raw_skus = {r["sku"] for r in res}
+                skus_met_raw = [s for s in skus if s in raw_skus]
+                skus_zonder_raw = [s for s in skus if s not in raw_skus]
+            except Exception:
+                skus_zonder_raw = skus
+
+        kosten = len(skus_met_raw) * 0.002 + len(skus_zonder_raw) * 0.002
+
+        col_i1, col_i2, col_i3 = st.columns(3)
+        col_i1.metric("Totaal", n)
+        col_i2.metric("Via volledige pipeline", len(skus_met_raw),
+                      help="Heeft products_raw record — categorisatie + vertaling + titel + meta")
+        col_i3.metric("Via AI-only", len(skus_zonder_raw),
+                      help="Geen products_raw record — alleen naam + meta via Claude")
+
+        if skus_met_raw:
+            st.caption(
+                f"**Volledige pipeline** ({len(skus_met_raw)} producten): "
+                "categorisatie via `seo_category_mapping`, materiaal/kleur vertaaltabellen, "
+                "titelbouw, tags, meta description (Sonnet)."
+            )
+        if skus_zonder_raw:
+            st.caption(
+                f"**AI-only** ({len(skus_zonder_raw)} producten): "
+                "geen raw data gevonden — alleen NL-naam + meta description gegenereerd."
+            )
+
+        st.caption(f"Geschatte kosten: ~€{kosten:.2f}")
+
+        if st.button(f"Start pipeline voor {n} producten", type="primary", key="hvp_start_ai"):
+            resultaat_rows = list(rows)  # werkkopie
+
+            # Deel A: Volledige transform via transform_v2 (voor producten met products_raw)
+            if skus_met_raw:
+                try:
+                    import sys
+                    from pathlib import Path as _Path
+                    _root = _Path(__file__).resolve().parent.parent / "dashboard_v2"
+                    if str(_root) not in sys.path:
+                        sys.path.insert(0, str(_root))
+                    from execution.transform_v2 import transform_batch
+
+                    bar = st.progress(0.0, text="Volledige pipeline bezig...")
+                    log_area = st.empty()
+                    log_lines: list[str] = []
+
+                    def _cb(i, n_total, msg=""):
+                        try:
+                            bar.progress(min(i / max(n_total, 1), 1.0))
+                        except Exception:
+                            pass
+                        if msg:
+                            log_lines.append(str(msg))
+                            log_area.code("\n".join(log_lines[-20:]))
+
+                    result = transform_batch(
+                        skus=skus_met_raw,
+                        progress=_cb,
+                        logger=lambda m: _cb(0, 1, m),
+                    )
+                    bar.progress(1.0, text="Volledige pipeline klaar.")
+                    st.success(
+                        f"✅ {result.ready} ready, {result.review} review, "
+                        f"{result.errors} errors — {result.learnings_applied} learnings toegepast."
+                    )
+                    if result.new_filter_values:
+                        with st.expander(f"⚠️ {len(result.new_filter_values)} nieuwe filterwaarden"):
+                            for w in result.new_filter_values[:20]:
+                                st.caption(f"- {w}")
+
+                    # Laad bijgewerkte curated records terug in rows
+                    sb = _get_sb()
+                    curated_res = sb.table("products_curated").select("*") \
+                        .in_("sku", skus_met_raw).execute().data or []
+                    curated_by_sku = {c["sku"]: c for c in curated_res}
+
+                    for i, r in enumerate(resultaat_rows):
+                        sku = r.get("sku")
+                        if sku and sku in curated_by_sku:
+                            # Merge: curated data overschrijft, maar foto's etc. uit Shopify bewaren
+                            resultaat_rows[i] = {**r, **curated_by_sku[sku]}
+
+                except Exception as e:
+                    st.error(f"❌ Pipeline fout: {e}")
+                    import traceback
+                    with st.expander("Traceback"):
+                        st.code(traceback.format_exc())
+
+            # Deel B: AI-only voor producten zonder raw data
+            if skus_zonder_raw:
+                rows_zonder = [r for r in resultaat_rows if r.get("sku") in skus_zonder_raw]
+                resultaat_zonder = _genereer_ai(rows_zonder)
+                # Merge terug
+                by_sku = {r.get("sku"): r for r in resultaat_zonder}
+                for i, r in enumerate(resultaat_rows):
+                    sku = r.get("sku")
+                    if sku and sku in by_sku:
+                        resultaat_rows[i] = by_sku[sku]
+
+            st.session_state["hv_pipeline_rows"] = resultaat_rows
             st.session_state["hvp_ai_klaar"] = True
             st.rerun()
         return
 
-    st.success(f"✅ AI-generatie klaar voor {n} producten.")
+    st.success(f"✅ Pipeline klaar voor {n} producten.")
 
     # ── Stap 2: Review & aanpassen ────────────────────────────────────────────
     st.markdown("### Stap 2 — Review en aanpassen")
