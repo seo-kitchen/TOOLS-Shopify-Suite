@@ -543,22 +543,20 @@ def render() -> None:
             st.caption("_Geen van de geselecteerde producten zit in products_curated._")
 
     with a3:
-        st.markdown("**C — Transformeer**")
+        st.markdown("**C — Transformeer & bewerk**")
         st.caption(
-            "Genereer NL-titels + meta descriptions via Claude Sonnet "
-            "en sla op in de database. Werkt voor alle geselecteerde producten."
+            "Ga naar het bewerkscherm: AI genereert NL-titels en meta descriptions, "
+            "daarna kun je alles aanpassen (categorie, afmetingen, teksten) "
+            "en exporteer je naar Hextom."
         )
-        st.caption(f"Geschatte kosten: ~€{len(selected_handles) * 0.002:.2f} ({len(selected_handles)} producten × Sonnet)")
+        st.caption(f"Geschatte kosten: ~€{len(selected_handles) * 0.002:.2f} ({len(selected_handles)} producten)")
         if st.button(
-            f"Transformeer {len(selected_handles)} producten",
+            f"Transformeer & bewerk {len(selected_handles)} producten",
             type="primary", key="hv_transform_inline"
         ):
-            st.session_state["hv_transform_starten"] = True
-            st.rerun()
-
-    # Transform buiten de kolommen zodat de voortgang breed getoond kan worden
-    if st.session_state.pop("hv_transform_starten", False):
-        _run_inline_transform(selected_rows)
+            st.session_state["hv_pipeline_rows"] = selected_rows
+            st.session_state.pop("hvp_ai_klaar", None)
+            st.switch_page("pages/09_Pipeline.py")
 
     st.divider()
     with st.expander(f"🔍 Volledigheidscheck ({len(selected_handles)} producten)"):
