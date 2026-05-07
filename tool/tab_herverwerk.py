@@ -321,8 +321,25 @@ def render() -> None:
         if col not in df.columns:
             df[col] = None
 
+    # ── Selectie-knoppen ──────────────────────────────────────────────────────
+    sel_col1, sel_col2, sel_col3 = st.columns([1, 1, 4])
+    with sel_col1:
+        if st.button(f"Selecteer alles ({len(rows)})", key="hv_sel_all"):
+            st.session_state["hv_sel_flag"] = True
+            st.session_state["hv_editor_v"] = st.session_state.get("hv_editor_v", 0) + 1
+            st.rerun()
+    with sel_col2:
+        if st.button("Wis selectie", key="hv_desel"):
+            st.session_state["hv_sel_flag"] = False
+            st.session_state["hv_editor_v"] = st.session_state.get("hv_editor_v", 0) + 1
+            st.rerun()
+
+    # Editor-key verandert bij selecteer/wis zodat de widget opnieuw rendert
+    editor_key = f"hv_editor_{st.session_state.get('hv_editor_v', 0)}"
+    init_select = st.session_state.get("hv_sel_flag", False)
+
     edited = st.data_editor(
-        df[["handle"] + TOON[1:]].assign(_select=False),
+        df[["handle"] + TOON[1:]].assign(_select=init_select),
         column_config={
             "_select":         st.column_config.CheckboxColumn("✔", default=False, width="small"),
             "handle":          st.column_config.TextColumn("Handle", disabled=True, width="medium"),
@@ -338,7 +355,7 @@ def render() -> None:
         hide_index=True,
         disabled=["handle"] + TOON[1:],
         width="stretch",
-        key="hv_editor",
+        key=editor_key,
     )
 
     selected_handles = edited.loc[edited["_select"], "handle"].tolist()
