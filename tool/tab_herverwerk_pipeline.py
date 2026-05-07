@@ -439,7 +439,6 @@ def render() -> None:
                 if gaps:
                     with st.expander(f"⚠️ {len(gaps)} categorie-combinaties nog niet gemapt — {sum(gaps.values())} producten gaan op review na de pipeline"):
                         st.caption("Na de pipeline kun je in stap 1b de juiste categorie koppelen. Die mapping wordt ook opgeslagen voor toekomstige batches.")
-                        import pandas as pd
                         df_gaps = pd.DataFrame([
                             {"leverancier_category": k[0], "leverancier_item_cat": k[1] or "(leeg)", "aantal": v}
                             for k, v in sorted(gaps.items(), key=lambda x: -x[1])
