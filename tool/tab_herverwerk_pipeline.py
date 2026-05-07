@@ -223,6 +223,141 @@ def _build_excel(rows: list[dict]) -> bytes:
     return buf.getvalue()
 
 
+# ── Categorie koppelen ────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _laad_beschikbare_cats() -> list[dict]:
+    """Unieke (hoofdcat, subcat, sub_subcat) combinaties uit seo_category_mapping."""
+    try:
+        sb = _get_sb()
+        rows = sb.table("seo_category_mapping").select(
+            "hoofdcategorie,subcategorie,sub_subcategorie"
+        ).execute().data or []
+        seen = set()
+        result = []
+        for r in rows:
+            key = (r.get("hoofdcategorie",""), r.get("subcategorie",""), r.get("sub_subcategorie",""))
+            if key not in seen and key[0]:
+                seen.add(key)
+                result.append({"hoofdcategorie": key[0], "subcategorie": key[1], "sub_subcategorie": key[2]})
+        return sorted(result, key=lambda x: (x["hoofdcategorie"], x["subcategorie"], x["sub_subcategorie"]))
+    except Exception:
+        return []
+
+
+def _categorie_koppel_stap(original_rows: list[dict]) -> None:
+    """Toon review-producten (geen categorie) met een categorie-picker."""
+    sb = _get_sb()
+    skus = [r.get("sku") for r in original_rows if r.get("sku")]
+    if not skus:
+        return
+
+    # Laad producten die na de pipeline in review staan vanwege categorie
+    try:
+        review_rows = sb.table("products_curated").select(
+            "id,sku,product_title_nl,supplier,pipeline_status,review_reden,"
+            "hoofdcategorie,subcategorie,sub_subcategorie"
+        ).in_("sku", skus).eq("pipeline_status", "review").execute().data or []
+        cat_review = [r for r in review_rows if "categorie" in (r.get("review_reden") or "")]
+    except Exception:
+        return
+
+    if not cat_review:
+        return
+
+    # Haal leverancier-info op uit products_raw
+    try:
+        raw_info = sb.table("products_raw").select(
+            "sku,leverancier_category,leverancier_item_cat,product_name_raw"
+        ).in_("sku", [r["sku"] for r in cat_review]).execute().data or []
+        raw_by_sku = {r["sku"]: r for r in raw_info}
+    except Exception:
+        raw_by_sku = {}
+
+    beschikbaar = _laad_beschikbare_cats()
+    if not beschikbaar:
+        return
+
+    with st.expander(
+        f"### Stap 1b — Categorie koppelen ({len(cat_review)} producten zonder mapping)",
+        expanded=True
+    ):
+        st.caption(
+            "Deze producten hadden geen match in `seo_category_mapping`. "
+            "Koppel de juiste categorie — die wordt ook als nieuwe mapping opgeslagen "
+            "zodat dezelfde leverancier-combinatie volgende keer automatisch herkend wordt."
+        )
+
+        # Unieke leverancier-combinaties (één koppeling geldt voor meerdere producten)
+        from collections import defaultdict
+        combo_to_skus: dict[tuple, list[str]] = defaultdict(list)
+        for r in cat_review:
+            raw = raw_by_sku.get(r["sku"], {})
+            lc  = raw.get("leverancier_category", "") or ""
+            lic = raw.get("leverancier_item_cat", "") or ""
+            combo_to_skus[(lc, lic)].append(r["sku"])
+
+        # Hoofd- en sub-categorieën voor dropdowns
+        hoofdcats = sorted(set(c["hoofdcategorie"] for c in beschikbaar))
+
+        for idx, ((lc, lic), combo_skus) in enumerate(combo_to_skus.items()):
+            st.divider()
+            naam_preview = (raw_by_sku.get(combo_skus[0], {}).get("product_name_raw") or combo_skus[0])[:60]
+            st.markdown(f"**{lc}** / {lic or '(leeg)'}  —  {len(combo_skus)} producten  ·  bv. *{naam_preview}*")
+
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                hc = st.selectbox("Hoofdcategorie", hoofdcats, key=f"hck_{idx}")
+            with c2:
+                subcats = sorted(set(
+                    c["subcategorie"] for c in beschikbaar if c["hoofdcategorie"] == hc and c["subcategorie"]
+                ))
+                sc = st.selectbox("Subcategorie", subcats or ["(kies hoofdcat eerst)"], key=f"sck_{idx}")
+            with c3:
+                subsubs = sorted(set(
+                    c["sub_subcategorie"] for c in beschikbaar
+                    if c["hoofdcategorie"] == hc and c["subcategorie"] == sc and c["sub_subcategorie"]
+                ))
+                ssc = st.selectbox("Sub-subcategorie", subsubs or ["(kies subcat eerst)"], key=f"ssck_{idx}")
+
+            if st.button(f"Koppel deze categorie ({len(combo_skus)} producten)", key=f"koppel_{idx}", type="primary"):
+                try:
+                    upd = {
+                        "hoofdcategorie": hc,
+                        "subcategorie": sc,
+                        "sub_subcategorie": ssc,
+                        "collectie": sc,
+                        "pipeline_status": "ready",
+                        "review_reden": None,
+                        "tags": f"cat_{hc.lower().replace(' ','_').replace('&','en')},"
+                                f"cat_{sc.lower().replace(' ','_').replace('&','en')},"
+                                f"cat_{ssc.lower().replace(' ','_').replace('&','en')}",
+                    }
+                    # Update alle SKUs met deze leverancier-combinatie
+                    for sku in combo_skus:
+                        sb.table("products_curated").update(upd).eq("sku", sku).execute()
+
+                    # Voeg toe aan seo_category_mapping
+                    import uuid
+                    sb.table("seo_category_mapping").insert({
+                        "id": str(uuid.uuid4()),
+                        "leverancier_category": lc,
+                        "leverancier_item_cat": lic or "?",
+                        "hoofdcategorie": hc,
+                        "subcategorie": sc,
+                        "sub_subcategorie": ssc,
+                    }).execute()
+
+                    _laad_beschikbare_cats.clear()
+                    st.success(
+                        f"✅ {len(combo_skus)} producten gekoppeld aan {hc} / {sc} / {ssc}. "
+                        f"Mapping ook opgeslagen voor toekomstige batches."
+                    )
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Fout: {e}")
+
+
 # ── Render ────────────────────────────────────────────────────────────────────
 
 def render() -> None:
@@ -302,15 +437,14 @@ def render() -> None:
                         gaps[k] = gaps.get(k, 0) + 1
 
                 if gaps:
-                    with st.expander(f"⚠️ {len(gaps)} categorie-combinaties nog niet gemapt — {sum(gaps.values())} producten gaan op review"):
-                        st.caption("Producten die al een categorie hebben in de database worden overgeslagen (categorie bewaard). De rest gaat op review.")
+                    with st.expander(f"⚠️ {len(gaps)} categorie-combinaties nog niet gemapt — {sum(gaps.values())} producten gaan op review na de pipeline"):
+                        st.caption("Na de pipeline kun je in stap 1b de juiste categorie koppelen. Die mapping wordt ook opgeslagen voor toekomstige batches.")
                         import pandas as pd
                         df_gaps = pd.DataFrame([
-                            {"leverancier_category": k[0], "leverancier_item_cat": k[1], "aantal": v}
+                            {"leverancier_category": k[0], "leverancier_item_cat": k[1] or "(leeg)", "aantal": v}
                             for k, v in sorted(gaps.items(), key=lambda x: -x[1])
                         ])
                         st.dataframe(df_gaps, hide_index=True, use_container_width=True)
-                        st.caption("Voeg ze toe via **Volledige pipeline → Stap 2** of run toch en corrigeer daarna in de review-tabel.")
             except Exception:
                 pass
 
@@ -390,6 +524,9 @@ def render() -> None:
         return
 
     st.success(f"✅ Pipeline klaar voor {n} producten.")
+
+    # ── Stap 1b: Categorie koppelen voor review-producten ────────────────────
+    _categorie_koppel_stap(rows)
 
     # ── Stap 2: Review & aanpassen ────────────────────────────────────────────
     st.markdown("### Stap 2 — Review en aanpassen")

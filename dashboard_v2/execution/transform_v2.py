@@ -603,13 +603,6 @@ def transform_batch(
                 updates["subcategorie"] = cat_row["subcategorie"]
                 updates["sub_subcategorie"] = cat_row["sub_subcategorie"]
                 updates["collectie"] = cat_row["subcategorie"]
-            elif existing.get("hoofdcategorie"):
-                # Bestaande categorie uit products_curated bewaren (herverwerk-geval)
-                updates["hoofdcategorie"] = existing["hoofdcategorie"]
-                updates["subcategorie"] = existing.get("subcategorie", "")
-                updates["sub_subcategorie"] = existing.get("sub_subcategorie", "")
-                updates["collectie"] = existing.get("collectie", existing.get("subcategorie", ""))
-                log(f"  ℹ {sku}: bestaande categorie bewaard ({existing['hoofdcategorie']})")
             else:
                 review_redenen.append("categorie niet gevonden in mapping-tabel")
                 result.twijfelgevallen.append({
