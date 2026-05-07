@@ -278,6 +278,42 @@ def render() -> None:
 
         st.caption(f"Geschatte kosten: ~€{kosten:.2f}")
 
+        # Toon ontbrekende categorie-mappings zodat de gebruiker ze kan toevoegen
+        if skus_met_raw:
+            try:
+                sb = _get_sb()
+                raw_res = sb.table("products_raw").select(
+                    "sku,leverancier_category,leverancier_item_cat"
+                ).in_("sku", skus_met_raw).execute().data or []
+                mappings_res = sb.table("seo_category_mapping").select(
+                    "leverancier_category,leverancier_item_cat"
+                ).execute().data or []
+                gemapt = {(m.get("leverancier_category",""), m.get("leverancier_item_cat",""))
+                          for m in mappings_res}
+                curated_res = sb.table("products_curated").select(
+                    "sku,hoofdcategorie"
+                ).in_("sku", skus_met_raw).execute().data or []
+                al_gecategoriseerd = {c["sku"] for c in curated_res if c.get("hoofdcategorie")}
+
+                gaps = {}
+                for r in raw_res:
+                    k = (r.get("leverancier_category",""), r.get("leverancier_item_cat",""))
+                    if k not in gemapt and r["sku"] not in al_gecategoriseerd:
+                        gaps[k] = gaps.get(k, 0) + 1
+
+                if gaps:
+                    with st.expander(f"⚠️ {len(gaps)} categorie-combinaties nog niet gemapt — {sum(gaps.values())} producten gaan op review"):
+                        st.caption("Producten die al een categorie hebben in de database worden overgeslagen (categorie bewaard). De rest gaat op review.")
+                        import pandas as pd
+                        df_gaps = pd.DataFrame([
+                            {"leverancier_category": k[0], "leverancier_item_cat": k[1], "aantal": v}
+                            for k, v in sorted(gaps.items(), key=lambda x: -x[1])
+                        ])
+                        st.dataframe(df_gaps, hide_index=True, use_container_width=True)
+                        st.caption("Voeg ze toe via **Volledige pipeline → Stap 2** of run toch en corrigeer daarna in de review-tabel.")
+            except Exception:
+                pass
+
         if st.button(f"Start pipeline voor {n} producten", type="primary", key="hvp_start_ai"):
             resultaat_rows = list(rows)  # werkkopie
 
