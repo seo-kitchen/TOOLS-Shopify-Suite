@@ -556,7 +556,7 @@ def render() -> None:
         ):
             st.session_state["hv_pipeline_rows"] = selected_rows
             st.session_state.pop("hvp_ai_klaar", None)
-            st.switch_page("pages/09_Pipeline.py")
+            st.switch_page("pages/09_Herverwerk_Review.py")
 
     st.divider()
     with st.expander(f"🔍 Volledigheidscheck ({len(selected_handles)} producten)"):
