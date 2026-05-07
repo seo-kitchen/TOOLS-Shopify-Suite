@@ -316,12 +316,16 @@ except Exception:
 PAGES_DIR = _HERE / "pages"
 
 NAV = {
-    "Pipeline": [
-        st.Page(str(PAGES_DIR / "01_Nieuwe.py"),     title="Nieuwe producten toevoegen", default=True, url_path="nieuwe"),
+    "Pipeline (volledig)": [
+        st.Page(str(PAGES_DIR / "10_Pipeline.py"),   title="Volledige pipeline",         default=True, url_path="pipeline"),
+        st.Page(str(PAGES_DIR / "11_Learnings.py"),  title="Learnings (feedback)",        url_path="learnings"),
+    ],
+    "Snelle acties": [
+        st.Page(str(PAGES_DIR / "01_Nieuwe.py"),     title="Nieuwe producten (legacy)",  url_path="nieuwe"),
         st.Page(str(PAGES_DIR / "02_Prijzen.py"),    title="Prijzen bijwerken",          url_path="prijzen"),
         st.Page(str(PAGES_DIR / "03_Collectie.py"),  title="Collectie SEO-teksten",      url_path="collectie"),
         st.Page(str(PAGES_DIR / "08_Herverwerk.py"), title="Archief herverwerken",       url_path="herverwerk"),
-        st.Page(str(PAGES_DIR / "09_Pipeline.py"),  title="Herverwerk — review",          url_path="herverwerk-pipeline"),
+        st.Page(str(PAGES_DIR / "09_Pipeline.py"),   title="Herverwerk — review",        url_path="herverwerk-pipeline"),
     ],
     "Overzicht": [
         st.Page(str(PAGES_DIR / "04_Status.py"),     title="Status & analyses",          url_path="status"),
