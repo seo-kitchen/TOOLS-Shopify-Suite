@@ -418,13 +418,33 @@ def generate_handle(title_nl: str) -> str:
 # ── Categorie lookup ──────────────────────────────────────────────────────────
 
 def lookup_category(sb, leverancier_category: str, leverancier_item_cat: str):
-    """Zoek match in seo_category_mapping (nu in nieuwe Supabase)."""
+    """Zoek match in seo_category_mapping.
+
+    Strategie:
+    1. Exacte match op (leverancier_category, leverancier_item_cat)
+    2. Als item_cat leeg/null: match op alleen leverancier_category (eerste treffer)
+    3. Als item_cat gevuld maar geen exacte match: ook proberen op alleen leverancier_category
+    """
+    if not leverancier_category:
+        return None
     try:
-        result = sb.table("seo_category_mapping").select("*") \
+        # 1. Exacte match
+        if leverancier_item_cat:
+            res = sb.table("seo_category_mapping").select("*") \
+                .eq("leverancier_category", leverancier_category) \
+                .eq("leverancier_item_cat", leverancier_item_cat) \
+                .execute()
+            if res.data:
+                return res.data[0]
+
+        # 2. Fallback: alleen op leverancier_category (negeert item_cat)
+        res2 = sb.table("seo_category_mapping").select("*") \
             .eq("leverancier_category", leverancier_category) \
-            .eq("leverancier_item_cat", leverancier_item_cat) \
             .execute()
-        return result.data[0] if result.data else None
+        if res2.data:
+            return res2.data[0]
+
+        return None
     except Exception:
         return None
 
