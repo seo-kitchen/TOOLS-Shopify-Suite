@@ -262,6 +262,142 @@ def _load(vendor: str, shopify_status: str, zoek: str, limit: int) -> list[dict]
     return merged
 
 
+def _run_inline_transform(rows: list[dict]) -> None:
+    """Genereer NL-titels + meta descriptions en sla op in products_curated."""
+    import anthropic
+
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        st.error("ANTHROPIC_API_KEY ontbreekt in de environment variables.")
+        return
+
+    client = anthropic.Anthropic(api_key=api_key)
+    sb = _get_sb()
+    n = len(rows)
+
+    st.divider()
+    st.markdown("### Transformeren bezig...")
+    bar = st.progress(0, text="Voorbereiden...")
+    log = st.empty()
+
+    # Stap 1: batch naam-vertaling via Haiku (één call voor alle namen)
+    namen_raw = [r.get("product_title", "") for r in rows]
+    uniek = list(dict.fromkeys(nm.strip() for nm in namen_raw if nm.strip()))
+    vertaling_map: dict[str, str] = {}
+
+    bar.progress(0.0, text=f"Stap 1/2 — {len(uniek)} namen vertalen (Haiku)...")
+    try:
+        prompt = (
+            f"Vertaal deze {len(uniek)} Engelse productnamen naar het Nederlands "
+            "voor een design webshop.\n\n"
+            "REGELS:\n"
+            "- Behoud eigennamen (collectie/designer) onveranderd\n"
+            "- Title Case (eerste letter van elk woord groot, behalve van/de/het/en)\n"
+            "- Vertaal productwoorden: Plate→Bord, Bowl→Kom, Vase→Vaas, Pot→Pot, "
+            "Cup→Kopje, Mug→Mok, Tray→Dienblad, Jug→Kan, Mirror→Spiegel\n"
+            "- Maatcodes blijven uppercase: XS, S, M, L, XL\n"
+            "- Één regel per naam, zelfde volgorde, geen nummering\n\n"
+            "INPUT:\n"
+            + "\n".join(uniek)
+            + "\n\nOUTPUT:"
+        )
+        resp = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=max(2000, len(uniek) * 16),
+            messages=[{"role": "user", "content": prompt}],
+        )
+        lines = [l.strip() for l in resp.content[0].text.strip().split("\n") if l.strip()]
+        if len(lines) == len(uniek):
+            vertaling_map = dict(zip(uniek, lines))
+        log.caption(f"✅ {len(vertaling_map)} namen vertaald")
+    except Exception as e:
+        log.caption(f"⚠️ Naam-vertaling overgeslagen: {e}")
+
+    # Stap 2: meta description per product + upsert in products_curated
+    success = errors = 0
+    resultaten = []
+
+    for i, p in enumerate(rows):
+        frac = (i + 1) / n
+        bar.progress(frac, text=f"Stap 2/2 — {i+1}/{n}: {p.get('sku') or p.get('handle', '')}")
+
+        raw_title = (p.get("product_title") or "").strip()
+        title_nl  = vertaling_map.get(raw_title, raw_title)
+        vendor    = p.get("vendor", "")
+        handle    = p.get("handle", "")
+        sku       = p.get("sku", "")
+
+        try:
+            meta_prompt = (
+                f"Schrijf een Nederlandse SEO meta description (120–155 tekens).\n"
+                f"Product: {title_nl}\nMerk: {vendor}\n\n"
+                "Regels: gebruik 'je'-vorm, eindig met een CTA (bijv. 'Bestel nu', "
+                "'Bekijk het aanbod'), vermeld gratis verzending vanaf €75 als dat past.\n"
+                "Geef alleen de meta description terug, geen uitleg."
+            )
+            meta_resp = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=200,
+                messages=[{"role": "user", "content": meta_prompt}],
+            )
+            meta = meta_resp.content[0].text.strip()[:155]
+
+            # Prijs veilig converteren
+            prijs = None
+            try:
+                prijs = float(p["price"]) if p.get("price") else None
+            except (ValueError, TypeError):
+                pass
+
+            curated_data = {
+                "handle":           handle,
+                "sku":              sku,
+                "supplier":         vendor,
+                "product_title_nl": title_nl,
+                "meta_description": meta,
+                "pipeline_status":  "ready",
+            }
+            if prijs is not None:
+                curated_data["verkoopprijs"] = prijs
+
+            # Upsert: update als handle al bestaat, anders insert
+            existing = sb.table("products_curated").select("id") \
+                         .eq("handle", handle).execute().data
+            if existing:
+                sb.table("products_curated").update(curated_data) \
+                  .eq("handle", handle).execute()
+            else:
+                sb.table("products_curated").insert(curated_data).execute()
+
+            resultaten.append({**p, "product_title_nl": title_nl, "meta_description": meta})
+            success += 1
+
+        except Exception as e:
+            errors += 1
+            resultaten.append({**p, "fout": str(e)})
+
+    bar.progress(1.0, text="Klaar.")
+
+    st.success(f"✅ {success} producten getransformeerd en opgeslagen in de database.")
+    if errors:
+        st.warning(f"⚠️ {errors} producten mislukt.")
+
+    # Cache legen zodat de tabel de nieuwe data toont
+    _load.clear()
+
+    # Download Hextom Excel van getransformeerde producten
+    if resultaten:
+        xlsx = _build_hextom_excel(resultaten)
+        sup_label = (resultaten[0].get("vendor") or "producten").replace(" ", "_")
+        st.download_button(
+            label=f"📥 Download {success} getransformeerde producten als Hextom Excel",
+            data=xlsx,
+            file_name=f"hextom_{sup_label}_getransformeerd_{success}st.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="hv_transform_dl",
+        )
+
+
 def render() -> None:
     st.subheader("Archief herverwerken")
     st.caption(
@@ -407,17 +543,22 @@ def render() -> None:
             st.caption("_Geen van de geselecteerde producten zit in products_curated._")
 
     with a3:
-        st.markdown("**C — Stuur naar Transform**")
-        st.caption("Zet curated IDs klaar voor het Transform-scherm (max 100).")
-        curated_ids_transform = [r["id"] for r in selected_rows if r.get("id") and r.get("pipeline_status")]
-        n = min(len(curated_ids_transform), 100)
-        if curated_ids_transform:
-            if st.button(f"✨ Stuur {n} naar Transform", key="hv_to_transform"):
-                st.session_state["selected_ids"] = curated_ids_transform[:100]
-                st.session_state["transform_from_producten"] = True
-                st.success(f"✅ {n} IDs klaargezet. Ga naar **Transform** in het menu.")
-        else:
-            st.caption("_Geen pipeline-producten in selectie._")
+        st.markdown("**C — Transformeer**")
+        st.caption(
+            "Genereer NL-titels + meta descriptions via Claude Sonnet "
+            "en sla op in de database. Werkt voor alle geselecteerde producten."
+        )
+        st.caption(f"Geschatte kosten: ~€{len(selected_handles) * 0.002:.2f} ({len(selected_handles)} producten × Sonnet)")
+        if st.button(
+            f"Transformeer {len(selected_handles)} producten",
+            type="primary", key="hv_transform_inline"
+        ):
+            st.session_state["hv_transform_starten"] = True
+            st.rerun()
+
+    # Transform buiten de kolommen zodat de voortgang breed getoond kan worden
+    if st.session_state.pop("hv_transform_starten", False):
+        _run_inline_transform(selected_rows)
 
     st.divider()
     with st.expander(f"🔍 Volledigheidscheck ({len(selected_handles)} producten)"):
