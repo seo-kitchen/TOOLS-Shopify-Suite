@@ -1,15 +1,20 @@
-"""Herverwerk-pipeline — review & bewerk geselecteerde producten.
+"""Herverwerk-pipeline — stap-voor-stap wizard.
 
-Wordt geopend vanuit de Herverwerk-tab. Stap voor stap:
-  1. Volledige pipeline (transform_v2): categorisatie + materiaal/kleur + titel + meta
-  2. Review & aanpassen: bewerkbaar overzicht per product
-  3. Opslaan in products_curated
-  4. Download Hextom Excel
+Stap 1 — Namen:        Haiku vertaalt namen → jij keurt goed / past aan
+Stap 2 — Categorieën:  mapping-tabel + materiaal/kleur → jij keurt goed / koppelt
+Stap 3 — Meta:         Sonnet schrijft descriptions → jij keurt goed / past aan
+Stap 4 — Opslaan:      schrijf naar products_curated + download Hextom Excel
+
+Foto's, EAN en barcodes worden nooit aangeraakt.
 """
 from __future__ import annotations
 
 import io
 import os
+import sys
+import uuid
+from collections import defaultdict
+from pathlib import Path
 
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
@@ -19,6 +24,10 @@ import streamlit as st
 from dotenv import load_dotenv
 
 load_dotenv()
+
+_ROOT = Path(__file__).resolve().parent.parent / "dashboard_v2"
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 
 @st.cache_resource
@@ -31,110 +40,439 @@ def _get_sb():
     return create_client(url, key)
 
 
-# ── AI-generatie ──────────────────────────────────────────────────────────────
+# ── Voortgangsbalk ────────────────────────────────────────────────────────────
 
-def _genereer_ai(rows: list[dict]) -> list[dict]:
-    """
-    Stap 1: batch naam-vertaling (Haiku) + meta description per product (Sonnet).
-    Werkt de rijen in-place bij en geeft ze terug.
-    """
-    import anthropic
-    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
-    n = len(rows)
-
-    bar = st.progress(0.0, text="Stap 1 — Namen vertalen (Haiku)...")
-    log = st.empty()
-
-    # ── Batch naam-vertaling (1 Haiku-call) ──
-    namen = [r.get("product_title", "").strip() for r in rows]
-    uniek = list(dict.fromkeys(nm for nm in namen if nm))
-    vertaling_map: dict[str, str] = {}
-
-    try:
-        prompt = (
-            f"Vertaal deze {len(uniek)} Engelse productnamen naar het Nederlands "
-            "voor een design webshop.\n\n"
-            "REGELS:\n"
-            "- Behoud eigennamen (collectie/designer) onveranderd\n"
-            "- Title Case (eerste letter groot, behalve van/de/het/en/in/op)\n"
-            "- Vertaal: Plate→Bord, Bowl→Kom, Vase→Vaas, Pot→Pot, Cup→Kopje, "
-            "Mug→Mok, Tray→Dienblad, Jug→Kan, Mirror→Spiegel, "
-            "Planter→Bloempot, Basket→Mand, Lantern→Lantaarn\n"
-            "- Maatcodes uppercase: XS, S, M, L, XL, XXL\n"
-            "- Één regel per naam, dezelfde volgorde, geen nummering\n\n"
-            "INPUT:\n" + "\n".join(uniek) + "\n\nOUTPUT:"
-        )
-        resp = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=max(2000, len(uniek) * 16),
-            messages=[{"role": "user", "content": prompt}],
-        )
-        lines = [l.strip() for l in resp.content[0].text.strip().split("\n") if l.strip()]
-        if len(lines) == len(uniek):
-            vertaling_map = dict(zip(uniek, lines))
-            log.caption(f"✅ {len(vertaling_map)} namen vertaald")
+def _voortgang(stap: int) -> None:
+    stappen = ["1. Namen", "2. Categorie & kleur", "3. Meta description", "4. Opslaan"]
+    cols = st.columns(len(stappen))
+    for i, (col, label) in enumerate(zip(cols, stappen), 1):
+        if i < stap:
+            col.markdown(f"<div style='text-align:center;color:#4F7A4A;font-size:13px'>✅ {label}</div>",
+                         unsafe_allow_html=True)
+        elif i == stap:
+            col.markdown(f"<div style='text-align:center;font-weight:600;font-size:13px'>▶ {label}</div>",
+                         unsafe_allow_html=True)
         else:
-            log.caption(f"⚠️ Naam-vertaling mismatch ({len(lines)} vs {len(uniek)}), originele namen gebruikt")
-    except Exception as e:
-        log.caption(f"⚠️ Naam-vertaling mislukt: {e}")
-
-    # ── Meta description per product (Sonnet) ──
-    for i, r in enumerate(rows):
-        frac = (i + 1) / n
-        bar.progress(frac, text=f"Stap 2 — Meta desc {i+1}/{n}: {r.get('sku') or r.get('handle', '')}")
-
-        raw_title = (r.get("product_title") or "").strip()
-        title_nl = vertaling_map.get(raw_title, raw_title)
-
-        # Gebruik bestaande NL-titel als die al ingevuld is in curated
-        if r.get("product_title_nl"):
-            title_nl = r["product_title_nl"]
-
-        r["product_title_nl"] = title_nl
-
-        # Sla meta generation over als er al een goede meta description is
-        bestaande_meta = r.get("meta_description") or r.get("current_meta_description") or ""
-        if bestaande_meta and len(bestaande_meta) >= 100:
-            r["meta_description"] = bestaande_meta
-            continue
-
-        try:
-            vendor  = r.get("vendor", "")
-            subcat  = r.get("subcategorie") or r.get("product_type") or ""
-            mat     = r.get("materiaal_nl", "") or ""
-            kleur   = r.get("kleur_nl", "") or ""
-            hoogte  = r.get("hoogte_cm") or ""
-            lengte  = r.get("lengte_cm") or ""
-            breedte = r.get("breedte_cm") or ""
-            afm = f"H {hoogte} x L {lengte} x B {breedte} cm" if all([hoogte, lengte, breedte]) else ""
-
-            extra = ""
-            if mat:    extra += f"Materiaal: {mat}\n"
-            if kleur:  extra += f"Kleur: {kleur}\n"
-            if subcat: extra += f"Categorie: {subcat}\n"
-            if afm:    extra += f"Afmetingen: {afm}\n"
-
-            meta_prompt = (
-                f"Schrijf een Nederlandse SEO meta description (120–155 tekens).\n"
-                f"Product: {title_nl}\nMerk: {vendor}\n{extra}\n"
-                "Regels: 'je'-vorm, eindig met CTA, vermeld gratis verzending €75.\n"
-                "Geef alleen de meta description terug, geen uitleg."
-            )
-            resp = client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=200,
-                messages=[{"role": "user", "content": meta_prompt}],
-            )
-            r["meta_description"] = resp.content[0].text.strip()[:155]
-        except Exception as e:
-            r["meta_description"] = bestaande_meta or ""
-            log.caption(f"⚠️ Meta mislukt voor {r.get('handle', i)}: {e}")
-
-    bar.progress(1.0, text="AI-generatie klaar.")
-    return rows
+            col.markdown(f"<div style='text-align:center;color:#aaa;font-size:13px'>{label}</div>",
+                         unsafe_allow_html=True)
+    st.divider()
 
 
-# ── Hextom export ─────────────────────────────────────────────────────────────
+# ── Stap 1: Namen ─────────────────────────────────────────────────────────────
+
+def _stap_namen() -> None:
+    data: list[dict] = st.session_state["hvp_data"]
+    n = len(data)
+
+    st.markdown(f"### Namen vertalen ({n} producten)")
+    st.caption("Haiku vertaalt alle namen in één batch. Pas aan waar nodig, dan goedkeuren.")
+
+    if not st.session_state.get("hvp_s1_gerund"):
+        kosten = max(n * 0.0001, 0.01)
+        st.caption(f"Geschatte kosten: ~€{kosten:.2f} (Haiku batch)")
+        if st.button("Vertaal namen via Haiku", type="primary", key="hvp_s1_run"):
+            try:
+                from execution.transform_v2 import vertaal_productnamen_batch, get_claude
+                claude = get_claude()
+                namen = [r.get("product_title", "") or r.get("product_name_raw", "") for r in data]
+                with st.spinner("Haiku vertaalt..."):
+                    vertaling = vertaal_productnamen_batch(namen, claude)
+                for r in data:
+                    raw = r.get("product_title", "") or r.get("product_name_raw", "") or ""
+                    r["product_title_nl"] = vertaling.get(raw.strip(), raw)
+                st.session_state["hvp_data"] = data
+                st.session_state["hvp_s1_gerund"] = True
+                st.rerun()
+            except Exception as e:
+                st.error(f"Fout: {e}")
+        return
+
+    # Tabel om namen te bewerken
+    df = pd.DataFrame([{
+        "sku":           r.get("sku", ""),
+        "vendor":        r.get("vendor", "") or r.get("supplier", ""),
+        "naam_origineel": r.get("product_title", "") or r.get("product_name_raw", ""),
+        "naam_nl":       r.get("product_title_nl", ""),
+    } for r in data])
+
+    edited = st.data_editor(
+        df,
+        column_config={
+            "sku":            st.column_config.TextColumn("SKU",        disabled=True, width="small"),
+            "vendor":         st.column_config.TextColumn("Merk",       disabled=True, width="small"),
+            "naam_origineel": st.column_config.TextColumn("Origineel",  disabled=True, width="large"),
+            "naam_nl":        st.column_config.TextColumn("Naam NL ✏️", disabled=False, width="large"),
+        },
+        hide_index=True,
+        disabled=["sku", "vendor", "naam_origineel"],
+        width="stretch",
+        key="hvp_edit_s1",
+    )
+
+    c1, c2, c3 = st.columns([2, 2, 2])
+    with c1:
+        if st.button("↺ Opnieuw vertalen", key="hvp_s1_reset"):
+            st.session_state.pop("hvp_s1_gerund", None)
+            st.rerun()
+    with c3:
+        if st.button("Goedkeuren → Stap 2", type="primary", key="hvp_s1_ok"):
+            # Sla bewerkte namen op
+            for _, row in edited.iterrows():
+                for r in st.session_state["hvp_data"]:
+                    if r.get("sku") == row["sku"]:
+                        r["product_title_nl"] = row["naam_nl"]
+                        break
+            st.session_state["hvp_stap"] = 2
+            st.rerun()
+
+
+# ── Stap 2: Categorie, materiaal, kleur ──────────────────────────────────────
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _laad_cats() -> list[dict]:
+    try:
+        rows = _get_sb().table("seo_category_mapping").select(
+            "hoofdcategorie,subcategorie,sub_subcategorie"
+        ).execute().data or []
+        seen, result = set(), []
+        for r in rows:
+            k = (r.get("hoofdcategorie",""), r.get("subcategorie",""), r.get("sub_subcategorie",""))
+            if k not in seen and k[0]:
+                seen.add(k)
+                result.append({"hoofdcategorie": k[0], "subcategorie": k[1], "sub_subcategorie": k[2]})
+        return sorted(result, key=lambda x: (x["hoofdcategorie"], x["subcategorie"], x["sub_subcategorie"]))
+    except Exception:
+        return []
+
+
+def _stap_categorie_kleur() -> None:
+    data: list[dict] = st.session_state["hvp_data"]
+    n = len(data)
+
+    st.markdown(f"### Categorie, materiaal & kleur ({n} producten)")
+    st.caption(
+        "Categorisatie via mapping-tabel. Materiaal en kleur via vertaaltabellen "
+        "(Sonnet alleen als fallback). Producten zonder mapping krijgen een categorie-kiezer."
+    )
+
+    if not st.session_state.get("hvp_s2_gerund"):
+        kosten = n * 0.0005
+        st.caption(f"Geschatte kosten: ~€{kosten:.2f} (alleen Sonnet voor onbekende materialen/kleuren)")
+        if st.button("Run categorisatie + vertaling", type="primary", key="hvp_s2_run"):
+            try:
+                from execution.transform_v2 import (
+                    lookup_category, translate_material, translate_color,
+                    build_tags, apply_name_rules, apply_translation_learnings,
+                    load_active_learnings, get_claude, get_supabase
+                )
+                sb = _get_sb()
+                claude = get_claude()
+
+                all_learnings = load_active_learnings(sb)
+                cat_learnings = [L for L in all_learnings if L.get("stap") == "categorie"]
+                extra_mat, extra_kl = apply_translation_learnings(
+                    [L for L in all_learnings if L.get("stap") == "vertaling"]
+                )
+
+                bar = st.progress(0.0, text="Bezig...")
+                for idx, r in enumerate(data):
+                    bar.progress((idx + 1) / n, text=f"{idx+1}/{n}: {r.get('sku','')}")
+                    sku = r.get("sku", "")
+
+                    # Haal raw data op
+                    raw_data = {}
+                    if sku:
+                        try:
+                            res = sb.table("products_raw").select(
+                                "sku,leverancier_category,leverancier_item_cat,"
+                                "materiaal_raw,kleur_en,designer,giftbox,giftbox_qty,fase"
+                            ).eq("sku", sku).execute().data or []
+                            if res:
+                                raw_data = res[0]
+                        except Exception:
+                            pass
+
+                    # Categorie lookup
+                    cat_row = lookup_category(
+                        sb,
+                        raw_data.get("leverancier_category", ""),
+                        raw_data.get("leverancier_item_cat", ""),
+                    )
+                    if cat_row:
+                        r["hoofdcategorie"] = cat_row["hoofdcategorie"]
+                        r["subcategorie"] = cat_row["subcategorie"]
+                        r["sub_subcategorie"] = cat_row["sub_subcategorie"]
+                        r["collectie"] = cat_row["subcategorie"]
+                        r["_cat_gemapt"] = True
+                    else:
+                        r["_cat_gemapt"] = False
+                        r["_leverancier_category"] = raw_data.get("leverancier_category", "")
+                        r["_leverancier_item_cat"] = raw_data.get("leverancier_item_cat", "")
+
+                    # Name-rule learnings
+                    updates = {"sub_subcategorie": r.get("sub_subcategorie", "")}
+                    apply_name_rules(raw_data, updates, cat_learnings)
+                    if updates.get("sub_subcategorie"):
+                        r["sub_subcategorie"] = updates["sub_subcategorie"]
+
+                    # Tags
+                    r["tags"] = build_tags(
+                        r.get("hoofdcategorie", ""),
+                        r.get("subcategorie", ""),
+                        r.get("sub_subcategorie", ""),
+                        raw_data.get("fase", ""),
+                        extra_tags=updates.get("_extra_tags"),
+                    )
+
+                    # Materiaal + kleur
+                    mat_raw = raw_data.get("materiaal_raw", "") or ""
+                    r["materiaal_nl"] = translate_material(mat_raw, claude, extra_mat) if mat_raw else ""
+                    kl_en = raw_data.get("kleur_en", "") or ""
+                    naam_raw = raw_data.get("product_name_raw", "") or r.get("product_title", "")
+                    kl_filter, _ = translate_color(kl_en, naam_raw, claude, extra_kl) if kl_en else ("", "")
+                    r["kleur_nl"] = kl_filter
+
+                    # Designer, fase bewaren
+                    if raw_data.get("designer"):
+                        r["designer"] = raw_data["designer"]
+                    if raw_data.get("fase"):
+                        r["fase"] = raw_data["fase"]
+                    if raw_data.get("giftbox"):
+                        r["giftbox"] = raw_data["giftbox"]
+                    if raw_data.get("giftbox_qty"):
+                        r["giftbox_qty"] = raw_data["giftbox_qty"]
+
+                bar.progress(1.0, text="Klaar.")
+                st.session_state["hvp_data"] = data
+                st.session_state["hvp_s2_gerund"] = True
+                st.rerun()
+            except Exception as e:
+                st.error(f"Fout: {e}")
+                import traceback
+                with st.expander("Traceback"):
+                    st.code(traceback.format_exc())
+        return
+
+    # ── Categorie-koppeling voor producten zonder mapping ──
+    ongemapt = [r for r in data if not r.get("_cat_gemapt")]
+    if ongemapt:
+        cats = _laad_cats()
+        hoofdcats = sorted(set(c["hoofdcategorie"] for c in cats))
+        combo_to_rows: dict[tuple, list] = defaultdict(list)
+        for r in ongemapt:
+            k = (r.get("_leverancier_category",""), r.get("_leverancier_item_cat",""))
+            combo_to_rows[k].append(r)
+
+        with st.expander(
+            f"⚠️ {len(ongemapt)} producten zonder categorie-mapping — koppel hier",
+            expanded=True
+        ):
+            st.caption("Koppel de juiste categorie. Die wordt ook opgeslagen in de mapping-tabel voor toekomstige batches.")
+            for idx, ((lc, lic), combo_rows) in enumerate(combo_to_rows.items()):
+                st.markdown(f"**{lc}** / {lic or '(leeg)'}  —  {len(combo_rows)} producten")
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    hc = st.selectbox("Hoofdcategorie", hoofdcats, key=f"hck2_{idx}")
+                with c2:
+                    subcats = sorted(set(c["subcategorie"] for c in cats if c["hoofdcategorie"] == hc and c["subcategorie"]))
+                    sc = st.selectbox("Subcategorie", subcats or ["—"], key=f"sck2_{idx}")
+                with c3:
+                    subsubs = sorted(set(c["sub_subcategorie"] for c in cats if c["hoofdcategorie"] == hc and c["subcategorie"] == sc and c["sub_subcategorie"]))
+                    ssc = st.selectbox("Sub-subcategorie", subsubs or ["—"], key=f"ssck2_{idx}")
+
+                if st.button(f"Koppel ({len(combo_rows)} producten)", key=f"koppel2_{idx}"):
+                    for r in combo_rows:
+                        r["hoofdcategorie"] = hc
+                        r["subcategorie"] = sc
+                        r["sub_subcategorie"] = ssc
+                        r["collectie"] = sc
+                        r["_cat_gemapt"] = True
+                    try:
+                        sb = _get_sb()
+                        sb.table("seo_category_mapping").insert({
+                            "id": str(uuid.uuid4()),
+                            "leverancier_category": lc,
+                            "leverancier_item_cat": lic or "?",
+                            "hoofdcategorie": hc,
+                            "subcategorie": sc,
+                            "sub_subcategorie": ssc,
+                        }).execute()
+                        _laad_cats.clear()
+                    except Exception:
+                        pass
+                    st.session_state["hvp_data"] = data
+                    st.success(f"✅ Gekoppeld + opgeslagen in mapping-tabel.")
+                    st.rerun()
+                st.markdown("---")
+
+    # ── Bewerkbare tabel ──
+    st.markdown("**Controleer en pas aan:**")
+    df = pd.DataFrame([{
+        "sku":             r.get("sku", ""),
+        "naam_nl":         r.get("product_title_nl", ""),
+        "hoofdcategorie":  r.get("hoofdcategorie", ""),
+        "subcategorie":    r.get("subcategorie", ""),
+        "sub_subcategorie": r.get("sub_subcategorie", ""),
+        "materiaal_nl":    r.get("materiaal_nl", ""),
+        "kleur_nl":        r.get("kleur_nl", ""),
+    } for r in data])
+
+    edited = st.data_editor(
+        df,
+        column_config={
+            "sku":              st.column_config.TextColumn("SKU",          disabled=True,  width="small"),
+            "naam_nl":          st.column_config.TextColumn("Naam NL",      disabled=True,  width="medium"),
+            "hoofdcategorie":   st.column_config.TextColumn("Hoofdcat ✏️",  disabled=False, width="medium"),
+            "subcategorie":     st.column_config.TextColumn("Subcat ✏️",    disabled=False, width="medium"),
+            "sub_subcategorie": st.column_config.TextColumn("Sub-subcat ✏️", disabled=False, width="medium"),
+            "materiaal_nl":     st.column_config.TextColumn("Materiaal ✏️", disabled=False, width="small"),
+            "kleur_nl":         st.column_config.TextColumn("Kleur ✏️",     disabled=False, width="small"),
+        },
+        hide_index=True,
+        disabled=["sku", "naam_nl"],
+        width="stretch",
+        key="hvp_edit_s2",
+    )
+
+    c1, c2, c3 = st.columns([2, 2, 2])
+    with c1:
+        if st.button("← Terug naar namen", key="hvp_s2_back"):
+            st.session_state["hvp_stap"] = 1
+            st.session_state.pop("hvp_s2_gerund", None)
+            st.rerun()
+    with c2:
+        if st.button("↺ Opnieuw runnen", key="hvp_s2_reset"):
+            st.session_state.pop("hvp_s2_gerund", None)
+            st.rerun()
+    with c3:
+        if st.button("Goedkeuren → Stap 3", type="primary", key="hvp_s2_ok"):
+            for _, row in edited.iterrows():
+                for r in st.session_state["hvp_data"]:
+                    if r.get("sku") == row["sku"]:
+                        r["hoofdcategorie"] = row["hoofdcategorie"]
+                        r["subcategorie"] = row["subcategorie"]
+                        r["sub_subcategorie"] = row["sub_subcategorie"]
+                        r["materiaal_nl"] = row["materiaal_nl"]
+                        r["kleur_nl"] = row["kleur_nl"]
+                        break
+            st.session_state["hvp_stap"] = 3
+            st.rerun()
+
+
+# ── Stap 3: Meta descriptions ─────────────────────────────────────────────────
+
+def _stap_meta() -> None:
+    data: list[dict] = st.session_state["hvp_data"]
+    n = len(data)
+
+    st.markdown(f"### Meta descriptions schrijven ({n} producten)")
+    st.caption(
+        "Sonnet schrijft een meta description per product op basis van naam, categorie, "
+        "materiaal en kleur uit de vorige stappen. 120-155 tekens, je-vorm, eindigt met CTA."
+    )
+
+    if not st.session_state.get("hvp_s3_gerund"):
+        kosten = n * 0.002
+        st.caption(f"Geschatte kosten: ~€{kosten:.2f} (Sonnet, {n} calls)")
+        if st.button(f"Schrijf {n} meta descriptions", type="primary", key="hvp_s3_run"):
+            try:
+                import anthropic
+                client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY",""))
+                bar = st.progress(0.0, text="Bezig...")
+
+                for idx, r in enumerate(data):
+                    bar.progress((idx + 1) / n, text=f"{idx+1}/{n}: {r.get('sku','')}")
+
+                    title  = r.get("product_title_nl", "") or r.get("product_title", "")
+                    vendor = r.get("vendor", "") or r.get("supplier", "")
+                    subcat = r.get("subcategorie", "")
+                    mat    = r.get("materiaal_nl", "")
+                    kleur  = r.get("kleur_nl", "")
+                    h = r.get("hoogte_cm","") or ""
+                    l = r.get("lengte_cm","") or ""
+                    b = r.get("breedte_cm","") or ""
+                    afm = f"H {h} x L {l} x B {b} cm" if all([h, l, b]) else ""
+
+                    extra = "\n".join(filter(None, [
+                        f"Materiaal: {mat}" if mat else "",
+                        f"Kleur: {kleur}" if kleur else "",
+                        f"Subcategorie: {subcat}" if subcat else "",
+                        f"Afmetingen: {afm}" if afm else "",
+                    ]))
+
+                    try:
+                        resp = client.messages.create(
+                            model="claude-sonnet-4-6",
+                            max_tokens=200,
+                            messages=[{"role": "user", "content":
+                                f"Schrijf een Nederlandse SEO meta description (120–155 tekens).\n"
+                                f"Product: {title}\nMerk: {vendor}\n{extra}\n\n"
+                                "Regels: 'je'-vorm, eindig met CTA, vermeld gratis verzending €75 als dat past.\n"
+                                "Geef alleen de meta description terug."}],
+                        )
+                        r["meta_description"] = resp.content[0].text.strip()[:155]
+                    except Exception as e:
+                        r["meta_description"] = ""
+
+                bar.progress(1.0, text="Klaar.")
+                st.session_state["hvp_data"] = data
+                st.session_state["hvp_s3_gerund"] = True
+                st.rerun()
+            except Exception as e:
+                st.error(f"Fout: {e}")
+        return
+
+    # Bewerkbare tabel met tekenteller
+    df = pd.DataFrame([{
+        "sku":              r.get("sku", ""),
+        "naam_nl":          r.get("product_title_nl", ""),
+        "meta_description": r.get("meta_description", ""),
+        "tekens":           len(r.get("meta_description", "") or ""),
+    } for r in data])
+
+    edited = st.data_editor(
+        df,
+        column_config={
+            "sku":              st.column_config.TextColumn("SKU",              disabled=True,  width="small"),
+            "naam_nl":          st.column_config.TextColumn("Naam NL",          disabled=True,  width="medium"),
+            "meta_description": st.column_config.TextColumn("Meta description ✏️", disabled=False, width="large"),
+            "tekens":           st.column_config.NumberColumn("Tekens",          disabled=True,  width="small"),
+        },
+        hide_index=True,
+        disabled=["sku", "naam_nl", "tekens"],
+        width="stretch",
+        key="hvp_edit_s3",
+    )
+
+    # Live tekentellers
+    ok = int((df["tekens"] >= 120) & (df["tekens"] <= 155)).sum() if len(df) else 0
+    m1, m2, m3 = st.columns(3)
+    m1.metric("120-155 tekens ✅", ok)
+    m2.metric("Te kort (<120)", int((df["tekens"] < 120) & (df["tekens"] > 0)).sum())
+    m3.metric("Leeg", int(df["tekens"] == 0).sum())
+
+    c1, c2, c3 = st.columns([2, 2, 2])
+    with c1:
+        if st.button("← Terug naar categorie", key="hvp_s3_back"):
+            st.session_state["hvp_stap"] = 2
+            st.session_state.pop("hvp_s3_gerund", None)
+            st.rerun()
+    with c2:
+        if st.button("↺ Opnieuw genereren", key="hvp_s3_reset"):
+            st.session_state.pop("hvp_s3_gerund", None)
+            st.rerun()
+    with c3:
+        if st.button("Goedkeuren → Opslaan", type="primary", key="hvp_s3_ok"):
+            for _, row in edited.iterrows():
+                for r in st.session_state["hvp_data"]:
+                    if r.get("sku") == row["sku"]:
+                        r["meta_description"] = row["meta_description"]
+                        break
+            st.session_state["hvp_stap"] = 4
+            st.rerun()
+
+
+# ── Stap 4: Opslaan + Export ──────────────────────────────────────────────────
 
 HEXTOM_COLUMNS = [
     "Variant SKU", "", "", "Product Handle", "Product Title",
@@ -152,7 +490,7 @@ HEXTOM_COLUMNS = [
     "Product Metafield custom.artikelnummer",
     "Product Metafield custom.meta_description",
 ]
-TEXT_FORMAT_COLUMNS = {"Variant Barcode", "Product Metafield custom.ean"}
+TEXT_COLS = {"Variant Barcode", "Product Metafield custom.ean"}
 
 
 def _clean(v) -> str:
@@ -174,506 +512,172 @@ def _build_excel(rows: list[dict]) -> bytes:
         c = ws.cell(row=1, column=ci, value=col if col else "")
         c.fill = hf; c.font = hfont
         c.alignment = Alignment(horizontal="center")
-
     for ri, p in enumerate(rows, 2):
         row_data = {
-            "Variant SKU":                               p.get("sku", ""),
-            "Product Handle":                            p.get("handle", ""),
-            "Product Title":                             p.get("product_title_nl") or p.get("product_title", ""),
-            "Product Vendor":                            p.get("vendor", ""),
-            "Product Type":                              p.get("hoofdcategorie") or p.get("product_type", ""),
-            "Variant Barcode":                           str(p.get("ean_shopify", "") or ""),
-            "Variant Price":                             _clean(p.get("verkoopprijs") or p.get("price")),
-            "Variant Cost":                              _clean(p.get("inkoopprijs")),
-            "Product Description":                       p.get("meta_description", "") or "",
-            "Product Tags":                              p.get("tags", "") or "",
-            "Variant Metafield custom.collectie":        p.get("collectie", "") or "",
-            "Product Metafield custom.designer":         p.get("designer", "") or "",
-            "Product Metafield custom.materiaal":        p.get("materiaal_nl", "") or "",
-            "Product Metafield custom.kleur":            p.get("kleur_nl", "") or "",
-            "Product Metafield custom.hoogte_filter":    _clean(p.get("hoogte_cm")),
-            "Product Metafield custom.lengte_filter":    _clean(p.get("lengte_cm")),
-            "Product Metafield custom.breedte_filter":   _clean(p.get("breedte_cm")),
-            "photo_packshot_1":                          p.get("photo_packshot_1", "") or "",
-            "photo_packshot_2":                          p.get("photo_packshot_2", "") or "",
-            "photo_packshot_3":                          p.get("photo_packshot_3", "") or "",
-            "photo_packshot_4":                          p.get("photo_packshot_4", "") or "",
-            "photo_packshot_5":                          p.get("photo_packshot_5", "") or "",
-            "photo_lifestyle_1":                         p.get("photo_lifestyle_1", "") or "",
-            "photo_lifestyle_2":                         p.get("photo_lifestyle_2", "") or "",
-            "photo_lifestyle_3":                         p.get("photo_lifestyle_3", "") or "",
-            "photo_lifestyle_4":                         p.get("photo_lifestyle_4", "") or "",
-            "photo_lifestyle_5":                         p.get("photo_lifestyle_5", "") or "",
-            "Product Metafield custom.ean":              str(p.get("ean_piece", "") or ""),
-            "Product Metafield custom.artikelnummer":    p.get("sku", "") or "",
-            "Product Metafield custom.meta_description": p.get("meta_description", "") or "",
+            "Variant SKU":    p.get("sku",""),
+            "Product Handle": p.get("handle","") or p.get("sku",""),
+            "Product Title":  p.get("product_title_nl","") or p.get("product_title",""),
+            "Product Vendor": p.get("vendor","") or p.get("supplier",""),
+            "Product Type":   p.get("hoofdcategorie","") or p.get("product_type",""),
+            "Variant Barcode": str(p.get("ean_shopify","") or ""),
+            "Variant Price":  _clean(p.get("verkoopprijs") or p.get("price")),
+            "Variant Cost":   _clean(p.get("inkoopprijs")),
+            "Product Description": p.get("meta_description","") or "",
+            "Product Tags":   p.get("tags","") or "",
+            "Variant Metafield custom.collectie": p.get("collectie","") or "",
+            "Product Metafield custom.designer":  p.get("designer","") or "",
+            "Product Metafield custom.materiaal": p.get("materiaal_nl","") or "",
+            "Product Metafield custom.kleur":     p.get("kleur_nl","") or "",
+            "Product Metafield custom.hoogte_filter": _clean(p.get("hoogte_cm")),
+            "Product Metafield custom.lengte_filter": _clean(p.get("lengte_cm")),
+            "Product Metafield custom.breedte_filter": _clean(p.get("breedte_cm")),
+            "photo_packshot_1": p.get("photo_packshot_1","") or "",
+            "photo_packshot_2": p.get("photo_packshot_2","") or "",
+            "photo_packshot_3": p.get("photo_packshot_3","") or "",
+            "photo_packshot_4": p.get("photo_packshot_4","") or "",
+            "photo_packshot_5": p.get("photo_packshot_5","") or "",
+            "photo_lifestyle_1": p.get("photo_lifestyle_1","") or "",
+            "photo_lifestyle_2": p.get("photo_lifestyle_2","") or "",
+            "photo_lifestyle_3": p.get("photo_lifestyle_3","") or "",
+            "photo_lifestyle_4": p.get("photo_lifestyle_4","") or "",
+            "photo_lifestyle_5": p.get("photo_lifestyle_5","") or "",
+            "Product Metafield custom.ean": str(p.get("ean_piece","") or ""),
+            "Product Metafield custom.artikelnummer": p.get("sku","") or "",
+            "Product Metafield custom.meta_description": p.get("meta_description","") or "",
         }
         for ci, col in enumerate(HEXTOM_COLUMNS, 1):
-            val = row_data.get(col, "") if col else ""
+            val = row_data.get(col,"") if col else ""
             cell = ws.cell(row=ri, column=ci, value=val)
-            if col in TEXT_FORMAT_COLUMNS and val:
-                cell.value = str(val)
-                cell.number_format = "@"
-
-    for ci in range(1, len(HEXTOM_COLUMNS) + 1):
-        ws.column_dimensions[get_column_letter(ci)].width = {1:18,4:40,5:50,8:16,11:60,15:50}.get(ci, 20)
-
+            if col in TEXT_COLS and val:
+                cell.value = str(val); cell.number_format = "@"
+    for ci in range(1, len(HEXTOM_COLUMNS)+1):
+        ws.column_dimensions[get_column_letter(ci)].width = {1:18,4:40,5:50,8:16,11:60,15:50}.get(ci,20)
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
 
 
-# ── Categorie koppelen ────────────────────────────────────────────────────────
+def _stap_export() -> None:
+    data: list[dict] = st.session_state["hvp_data"]
+    n = len(data)
 
-@st.cache_data(ttl=300, show_spinner=False)
-def _laad_beschikbare_cats() -> list[dict]:
-    """Unieke (hoofdcat, subcat, sub_subcat) combinaties uit seo_category_mapping."""
-    try:
-        sb = _get_sb()
-        rows = sb.table("seo_category_mapping").select(
-            "hoofdcategorie,subcategorie,sub_subcategorie"
-        ).execute().data or []
-        seen = set()
-        result = []
-        for r in rows:
-            key = (r.get("hoofdcategorie",""), r.get("subcategorie",""), r.get("sub_subcategorie",""))
-            if key not in seen and key[0]:
-                seen.add(key)
-                result.append({"hoofdcategorie": key[0], "subcategorie": key[1], "sub_subcategorie": key[2]})
-        return sorted(result, key=lambda x: (x["hoofdcategorie"], x["subcategorie"], x["sub_subcategorie"]))
-    except Exception:
-        return []
+    st.markdown(f"### Opslaan & exporteren ({n} producten)")
 
+    # Samenvatting
+    df_sum = pd.DataFrame([{
+        "SKU": r.get("sku",""),
+        "Naam NL": r.get("product_title_nl",""),
+        "Categorie": f"{r.get('hoofdcategorie','')} / {r.get('sub_subcategorie','')}",
+        "Materiaal": r.get("materiaal_nl",""),
+        "Kleur": r.get("kleur_nl",""),
+        "Meta (tekens)": len(r.get("meta_description","") or ""),
+    } for r in data])
+    st.dataframe(df_sum, hide_index=True, use_container_width=True)
 
-def _categorie_koppel_stap(original_rows: list[dict]) -> None:
-    """Toon review-producten (geen categorie) met een categorie-picker."""
-    sb = _get_sb()
-    skus = [r.get("sku") for r in original_rows if r.get("sku")]
-    if not skus:
-        return
+    c1, c2, c3 = st.columns([2, 2, 2])
 
-    # Laad producten die na de pipeline in review staan vanwege categorie
-    try:
-        review_rows = sb.table("products_curated").select(
-            "id,sku,product_title_nl,supplier,pipeline_status,review_reden,"
-            "hoofdcategorie,subcategorie,sub_subcategorie"
-        ).in_("sku", skus).eq("pipeline_status", "review").execute().data or []
-        cat_review = [r for r in review_rows if "categorie" in (r.get("review_reden") or "")]
-    except Exception:
-        return
+    with c1:
+        if st.button("← Terug naar meta", key="hvp_s4_back"):
+            st.session_state["hvp_stap"] = 3
+            st.rerun()
 
-    if not cat_review:
-        return
-
-    # Haal leverancier-info op uit products_raw
-    try:
-        raw_info = sb.table("products_raw").select(
-            "sku,leverancier_category,leverancier_item_cat,product_name_raw"
-        ).in_("sku", [r["sku"] for r in cat_review]).execute().data or []
-        raw_by_sku = {r["sku"]: r for r in raw_info}
-    except Exception:
-        raw_by_sku = {}
-
-    beschikbaar = _laad_beschikbare_cats()
-    if not beschikbaar:
-        return
-
-    with st.expander(
-        f"### Stap 1b — Categorie koppelen ({len(cat_review)} producten zonder mapping)",
-        expanded=True
-    ):
-        st.caption(
-            "Deze producten hadden geen match in `seo_category_mapping`. "
-            "Koppel de juiste categorie — die wordt ook als nieuwe mapping opgeslagen "
-            "zodat dezelfde leverancier-combinatie volgende keer automatisch herkend wordt."
-        )
-
-        # Unieke leverancier-combinaties (één koppeling geldt voor meerdere producten)
-        from collections import defaultdict
-        combo_to_skus: dict[tuple, list[str]] = defaultdict(list)
-        for r in cat_review:
-            raw = raw_by_sku.get(r["sku"], {})
-            lc  = raw.get("leverancier_category", "") or ""
-            lic = raw.get("leverancier_item_cat", "") or ""
-            combo_to_skus[(lc, lic)].append(r["sku"])
-
-        # Hoofd- en sub-categorieën voor dropdowns
-        hoofdcats = sorted(set(c["hoofdcategorie"] for c in beschikbaar))
-
-        for idx, ((lc, lic), combo_skus) in enumerate(combo_to_skus.items()):
-            st.divider()
-            naam_preview = (raw_by_sku.get(combo_skus[0], {}).get("product_name_raw") or combo_skus[0])[:60]
-            st.markdown(f"**{lc}** / {lic or '(leeg)'}  —  {len(combo_skus)} producten  ·  bv. *{naam_preview}*")
-
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                hc = st.selectbox("Hoofdcategorie", hoofdcats, key=f"hck_{idx}")
-            with c2:
-                subcats = sorted(set(
-                    c["subcategorie"] for c in beschikbaar if c["hoofdcategorie"] == hc and c["subcategorie"]
-                ))
-                sc = st.selectbox("Subcategorie", subcats or ["(kies hoofdcat eerst)"], key=f"sck_{idx}")
-            with c3:
-                subsubs = sorted(set(
-                    c["sub_subcategorie"] for c in beschikbaar
-                    if c["hoofdcategorie"] == hc and c["subcategorie"] == sc and c["sub_subcategorie"]
-                ))
-                ssc = st.selectbox("Sub-subcategorie", subsubs or ["(kies subcat eerst)"], key=f"ssck_{idx}")
-
-            if st.button(f"Koppel deze categorie ({len(combo_skus)} producten)", key=f"koppel_{idx}", type="primary"):
+    with c2:
+        if st.button(f"Opslaan in database ({n})", type="primary", key="hvp_s4_save"):
+            sb = _get_sb()
+            saved = errors = 0
+            prog = st.progress(0.0)
+            for idx, r in enumerate(data):
+                prog.progress((idx+1)/n)
+                sku = r.get("sku","")
+                if not sku:
+                    continue
                 try:
+                    from execution.transform_v2 import generate_handle, build_title
+                    titel = r.get("product_title_nl","")
+                    handle = r.get("handle","") or generate_handle(titel) if titel else ""
                     upd = {
-                        "hoofdcategorie": hc,
-                        "subcategorie": sc,
-                        "sub_subcategorie": ssc,
-                        "collectie": sc,
+                        "sku": sku,
+                        "supplier": r.get("vendor","") or r.get("supplier",""),
+                        "product_title_nl": titel,
+                        "handle": handle,
+                        "hoofdcategorie": r.get("hoofdcategorie",""),
+                        "subcategorie": r.get("subcategorie",""),
+                        "sub_subcategorie": r.get("sub_subcategorie",""),
+                        "collectie": r.get("collectie","") or r.get("subcategorie",""),
+                        "tags": r.get("tags",""),
+                        "materiaal_nl": r.get("materiaal_nl",""),
+                        "kleur_nl": r.get("kleur_nl",""),
+                        "meta_description": r.get("meta_description",""),
                         "pipeline_status": "ready",
                         "review_reden": None,
-                        "tags": f"cat_{hc.lower().replace(' ','_').replace('&','en')},"
-                                f"cat_{sc.lower().replace(' ','_').replace('&','en')},"
-                                f"cat_{ssc.lower().replace(' ','_').replace('&','en')}",
                     }
-                    # Update alle SKUs met deze leverancier-combinatie
-                    for sku in combo_skus:
-                        sb.table("products_curated").update(upd).eq("sku", sku).execute()
-
-                    # Voeg toe aan seo_category_mapping
-                    import uuid
-                    sb.table("seo_category_mapping").insert({
-                        "id": str(uuid.uuid4()),
-                        "leverancier_category": lc,
-                        "leverancier_item_cat": lic or "?",
-                        "hoofdcategorie": hc,
-                        "subcategorie": sc,
-                        "sub_subcategorie": ssc,
-                    }).execute()
-
-                    _laad_beschikbare_cats.clear()
-                    st.success(
-                        f"✅ {len(combo_skus)} producten gekoppeld aan {hc} / {sc} / {ssc}. "
-                        f"Mapping ook opgeslagen voor toekomstige batches."
-                    )
-                    st.rerun()
+                    for veld in ("verkoopprijs","inkoopprijs"):
+                        val = r.get(veld)
+                        if val is not None:
+                            try: upd[veld] = float(val)
+                            except (ValueError, TypeError): pass
+                    existing = sb.table("products_curated").select("id").eq("sku",sku).execute().data
+                    if existing:
+                        sb.table("products_curated").update(upd).eq("sku",sku).execute()
+                    else:
+                        sb.table("products_curated").insert(upd).execute()
+                    saved += 1
                 except Exception as e:
-                    st.error(f"Fout: {e}")
+                    errors += 1
+            if errors:
+                st.warning(f"✅ {saved} opgeslagen · ⚠️ {errors} fouten")
+            else:
+                st.success(f"✅ {saved} producten opgeslagen in products_curated.")
+
+    with c3:
+        if st.button("Download Hextom Excel", key="hvp_s4_excel"):
+            with st.spinner("Excel bouwen..."):
+                xlsx = _build_excel(data)
+            vendor = (data[0].get("vendor","") or data[0].get("supplier","")).replace(" ","_") if data else "export"
+            st.download_button(
+                f"💾 Download ({n} producten)",
+                data=xlsx,
+                file_name=f"hextom_{vendor}_herverwerkt_{n}st.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="hvp_s4_dl",
+            )
+
+    st.divider()
+    if st.button("Opnieuw beginnen (nieuwe selectie)", key="hvp_s4_nieuw"):
+        for k in ["hvp_data","hvp_stap","hvp_s1_gerund","hvp_s2_gerund","hvp_s3_gerund","hvp_ai_klaar"]:
+            st.session_state.pop(k, None)
+        st.switch_page("pages/08_Herverwerk.py")
 
 
 # ── Render ────────────────────────────────────────────────────────────────────
 
 def render() -> None:
-    st.subheader("Herverwerk — review & aanpassen")
+    st.subheader("Herverwerk — stap-voor-stap pipeline")
 
     rows: list[dict] = st.session_state.get("hv_pipeline_rows", [])
     if not rows:
-        st.warning("Geen producten geladen. Ga terug naar **Archief herverwerken** en selecteer producten.")
-        if st.button("Terug naar Archief herverwerken"):
+        st.warning("Geen producten geladen. Ga terug naar **Archief herverwerken**.")
+        if st.button("Terug"):
             st.switch_page("pages/08_Herverwerk.py")
         return
 
-    n = len(rows)
-    st.caption(f"{n} producten geladen vanuit Archief herverwerken.")
+    # Initialiseer data + stap
+    if "hvp_data" not in st.session_state:
+        st.session_state["hvp_data"] = list(rows)
+    if "hvp_stap" not in st.session_state:
+        st.session_state["hvp_stap"] = 1
 
-    # ── Stap 1: Volledige pipeline ────────────────────────────────────────────
-    if not st.session_state.get("hvp_ai_klaar"):
-        st.markdown("### Stap 1 — Volledige pipeline")
+    n = len(st.session_state["hvp_data"])
+    st.caption(f"{n} producten geladen — foto's, EAN en barcodes worden niet aangeraakt.")
 
-        skus = [r.get("sku") for r in rows if r.get("sku")]
-        skus_met_raw = []
-        skus_zonder_raw = []
-        if skus:
-            try:
-                sb = _get_sb()
-                res = sb.table("products_raw").select("sku").in_("sku", skus[:500]).execute().data or []
-                raw_skus = {r["sku"] for r in res}
-                skus_met_raw = [s for s in skus if s in raw_skus]
-                skus_zonder_raw = [s for s in skus if s not in raw_skus]
-            except Exception:
-                skus_zonder_raw = skus
+    _voortgang(st.session_state["hvp_stap"])
 
-        kosten = len(skus_met_raw) * 0.002 + len(skus_zonder_raw) * 0.002
-
-        col_i1, col_i2, col_i3 = st.columns(3)
-        col_i1.metric("Totaal", n)
-        col_i2.metric("Via volledige pipeline", len(skus_met_raw),
-                      help="Heeft products_raw record — categorisatie + vertaling + titel + meta")
-        col_i3.metric("Via AI-only", len(skus_zonder_raw),
-                      help="Geen products_raw record — alleen naam + meta via Claude")
-
-        if skus_met_raw:
-            st.caption(
-                f"**Volledige pipeline** ({len(skus_met_raw)} producten): "
-                "categorisatie via `seo_category_mapping`, materiaal/kleur vertaaltabellen, "
-                "titelbouw, tags, meta description (Sonnet)."
-            )
-        if skus_zonder_raw:
-            st.caption(
-                f"**AI-only** ({len(skus_zonder_raw)} producten): "
-                "geen raw data gevonden — alleen NL-naam + meta description gegenereerd."
-            )
-
-        st.caption(f"Geschatte kosten: ~€{kosten:.2f}")
-
-        # Toon ontbrekende categorie-mappings zodat de gebruiker ze kan toevoegen
-        if skus_met_raw:
-            try:
-                sb = _get_sb()
-                raw_res = sb.table("products_raw").select(
-                    "sku,leverancier_category,leverancier_item_cat"
-                ).in_("sku", skus_met_raw).execute().data or []
-                mappings_res = sb.table("seo_category_mapping").select(
-                    "leverancier_category,leverancier_item_cat"
-                ).execute().data or []
-                gemapt = {(m.get("leverancier_category",""), m.get("leverancier_item_cat",""))
-                          for m in mappings_res}
-                curated_res = sb.table("products_curated").select(
-                    "sku,hoofdcategorie"
-                ).in_("sku", skus_met_raw).execute().data or []
-                al_gecategoriseerd = {c["sku"] for c in curated_res if c.get("hoofdcategorie")}
-
-                gaps = {}
-                for r in raw_res:
-                    k = (r.get("leverancier_category",""), r.get("leverancier_item_cat",""))
-                    if k not in gemapt and r["sku"] not in al_gecategoriseerd:
-                        gaps[k] = gaps.get(k, 0) + 1
-
-                if gaps:
-                    with st.expander(f"⚠️ {len(gaps)} categorie-combinaties nog niet gemapt — {sum(gaps.values())} producten gaan op review na de pipeline"):
-                        st.caption("Na de pipeline kun je in stap 1b de juiste categorie koppelen. Die mapping wordt ook opgeslagen voor toekomstige batches.")
-                        df_gaps = pd.DataFrame([
-                            {"leverancier_category": k[0], "leverancier_item_cat": k[1] or "(leeg)", "aantal": v}
-                            for k, v in sorted(gaps.items(), key=lambda x: -x[1])
-                        ])
-                        st.dataframe(df_gaps, hide_index=True, use_container_width=True)
-            except Exception:
-                pass
-
-        if st.button(f"Start pipeline voor {n} producten", type="primary", key="hvp_start_ai"):
-            resultaat_rows = list(rows)  # werkkopie
-
-            # Deel A: Volledige transform via transform_v2 (voor producten met products_raw)
-            if skus_met_raw:
-                try:
-                    import sys
-                    from pathlib import Path as _Path
-                    _root = _Path(__file__).resolve().parent.parent / "dashboard_v2"
-                    if str(_root) not in sys.path:
-                        sys.path.insert(0, str(_root))
-                    from execution.transform_v2 import transform_batch
-
-                    bar = st.progress(0.0, text="Volledige pipeline bezig...")
-                    log_area = st.empty()
-                    log_lines: list[str] = []
-
-                    def _cb(i, n_total, msg=""):
-                        try:
-                            bar.progress(min(i / max(n_total, 1), 1.0))
-                        except Exception:
-                            pass
-                        if msg:
-                            log_lines.append(str(msg))
-                            log_area.code("\n".join(log_lines[-20:]))
-
-                    result = transform_batch(
-                        skus=skus_met_raw,
-                        progress=_cb,
-                        logger=lambda m: _cb(0, 1, m),
-                    )
-                    bar.progress(1.0, text="Volledige pipeline klaar.")
-                    st.success(
-                        f"✅ {result.ready} ready, {result.review} review, "
-                        f"{result.errors} errors — {result.learnings_applied} learnings toegepast."
-                    )
-                    if result.new_filter_values:
-                        with st.expander(f"⚠️ {len(result.new_filter_values)} nieuwe filterwaarden"):
-                            for w in result.new_filter_values[:20]:
-                                st.caption(f"- {w}")
-
-                    # Laad bijgewerkte curated records terug in rows
-                    sb = _get_sb()
-                    curated_res = sb.table("products_curated").select("*") \
-                        .in_("sku", skus_met_raw).execute().data or []
-                    curated_by_sku = {c["sku"]: c for c in curated_res}
-
-                    for i, r in enumerate(resultaat_rows):
-                        sku = r.get("sku")
-                        if sku and sku in curated_by_sku:
-                            # Merge: curated data overschrijft, maar foto's etc. uit Shopify bewaren
-                            resultaat_rows[i] = {**r, **curated_by_sku[sku]}
-
-                except Exception as e:
-                    st.error(f"❌ Pipeline fout: {e}")
-                    import traceback
-                    with st.expander("Traceback"):
-                        st.code(traceback.format_exc())
-
-            # Deel B: AI-only voor producten zonder raw data
-            if skus_zonder_raw:
-                rows_zonder = [r for r in resultaat_rows if r.get("sku") in skus_zonder_raw]
-                resultaat_zonder = _genereer_ai(rows_zonder)
-                # Merge terug
-                by_sku = {r.get("sku"): r for r in resultaat_zonder}
-                for i, r in enumerate(resultaat_rows):
-                    sku = r.get("sku")
-                    if sku and sku in by_sku:
-                        resultaat_rows[i] = by_sku[sku]
-
-            st.session_state["hv_pipeline_rows"] = resultaat_rows
-            st.session_state["hvp_ai_klaar"] = True
-            st.rerun()
-        return
-
-    st.success(f"✅ Pipeline klaar voor {n} producten.")
-
-    # ── Stap 1b: Categorie koppelen voor review-producten ────────────────────
-    _categorie_koppel_stap(rows)
-
-    # ── Stap 2: Review & aanpassen ────────────────────────────────────────────
-    st.markdown("### Stap 2 — Review en aanpassen")
-    st.caption(
-        "Pas aan wat nodig is. Klik in een cel om te bewerken. "
-        "Foto's en EAN's worden NIET overschreven."
-    )
-
-    EDIT_COLS = [
-        "handle", "sku", "vendor",
-        "product_title_nl", "meta_description",
-        "hoofdcategorie", "subcategorie", "sub_subcategorie",
-        "collectie", "materiaal_nl", "kleur_nl",
-        "hoogte_cm", "lengte_cm", "breedte_cm",
-        "verkoopprijs",
-    ]
-    READONLY = ["handle", "sku", "vendor"]
-
-    df = pd.DataFrame(rows)
-    for col in EDIT_COLS:
-        if col not in df.columns:
-            df[col] = None
-
-    col_config = {
-        "handle":           st.column_config.TextColumn("Handle",        disabled=True,  width="medium"),
-        "sku":              st.column_config.TextColumn("SKU",            disabled=True,  width="small"),
-        "vendor":           st.column_config.TextColumn("Merk",           disabled=True,  width="small"),
-        "product_title_nl": st.column_config.TextColumn("Titel NL",       disabled=False, width="large"),
-        "meta_description": st.column_config.TextColumn("Meta description", disabled=False, width="large"),
-        "hoofdcategorie":   st.column_config.TextColumn("Hoofdcategorie", disabled=False, width="medium"),
-        "subcategorie":     st.column_config.TextColumn("Subcategorie",   disabled=False, width="medium"),
-        "sub_subcategorie": st.column_config.TextColumn("Sub-subcategorie", disabled=False, width="medium"),
-        "collectie":        st.column_config.TextColumn("Collectie",      disabled=False, width="small"),
-        "materiaal_nl":     st.column_config.TextColumn("Materiaal NL",   disabled=False, width="small"),
-        "kleur_nl":         st.column_config.TextColumn("Kleur NL",       disabled=False, width="small"),
-        "hoogte_cm":        st.column_config.NumberColumn("H (cm)",       disabled=False, width="small", format="%.1f"),
-        "lengte_cm":        st.column_config.NumberColumn("L (cm)",       disabled=False, width="small", format="%.1f"),
-        "breedte_cm":       st.column_config.NumberColumn("B (cm)",       disabled=False, width="small", format="%.1f"),
-        "verkoopprijs":     st.column_config.NumberColumn("Prijs (€)",    disabled=False, width="small", format="€ %.2f"),
-    }
-
-    edited_df = st.data_editor(
-        df[EDIT_COLS],
-        column_config=col_config,
-        column_order=EDIT_COLS,
-        hide_index=True,
-        disabled=READONLY,
-        width="stretch",
-        key="hvp_editor",
-    )
-
-    # Kwaliteitscheck balk
-    heeft_titel = edited_df["product_title_nl"].notna().sum()
-    heeft_meta  = edited_df["meta_description"].notna().sum()
-    heeft_cat   = edited_df["hoofdcategorie"].notna().sum()
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Producten", n)
-    c2.metric("Met NL-titel", int(heeft_titel))
-    c3.metric("Met meta desc", int(heeft_meta))
-    c4.metric("Met categorie", int(heeft_cat))
-
-    st.divider()
-
-    # ── Stap 3: Opslaan + exporteren ─────────────────────────────────────────
-    st.markdown("### Stap 3 — Opslaan en exporteren")
-
-    act1, act2 = st.columns(2)
-
-    with act1:
-        st.markdown("**Opslaan in database**")
-        st.caption("Schrijft alle bewerkingen naar `products_curated` (upsert op handle). Foto's blijven ongewijzigd.")
-        if st.button(f"Sla {n} producten op", type="primary", key="hvp_save"):
-            sb = _get_sb()
-            saved = errors = 0
-            for _, row in edited_df.iterrows():
-                handle = row.get("handle", "")
-                if not handle:
-                    continue
-                # Zoek de originele rij voor velden die NIET in de editor staan (foto's etc.)
-                orig = next((r for r in rows if r.get("handle") == handle), {})
-
-                curated_data: dict = {
-                    "handle":           handle,
-                    "sku":              row.get("sku") or orig.get("sku", ""),
-                    "supplier":         row.get("vendor") or orig.get("vendor", ""),
-                    "product_title_nl": row.get("product_title_nl") or "",
-                    "meta_description": row.get("meta_description") or "",
-                    "pipeline_status":  "ready",
-                }
-                # Optionele velden alleen opslaan als ze ingevuld zijn
-                for veld in ("hoofdcategorie", "subcategorie", "sub_subcategorie",
-                             "collectie", "materiaal_nl", "kleur_nl"):
-                    val = row.get(veld)
-                    if pd.notna(val) and str(val).strip():
-                        curated_data[veld] = str(val).strip()
-
-                for veld in ("hoogte_cm", "lengte_cm", "breedte_cm", "verkoopprijs"):
-                    val = row.get(veld)
-                    if pd.notna(val):
-                        try:
-                            curated_data[veld] = float(val)
-                        except (ValueError, TypeError):
-                            pass
-
-                try:
-                    existing = sb.table("products_curated").select("id") \
-                                 .eq("handle", handle).execute().data
-                    if existing:
-                        sb.table("products_curated").update(curated_data) \
-                          .eq("handle", handle).execute()
-                    else:
-                        sb.table("products_curated").insert(curated_data).execute()
-                    saved += 1
-                except Exception as e:
-                    errors += 1
-
-            if errors:
-                st.warning(f"✅ {saved} opgeslagen · ⚠️ {errors} fouten")
-            else:
-                st.success(f"✅ {saved} producten opgeslagen in de database.")
-
-    with act2:
-        st.markdown("**Download Hextom Excel**")
-        st.caption("Combineert de bewerkte data met bestaande foto's en EAN's.")
-
-        if st.button(f"Download {n} producten als Hextom Excel", key="hvp_export"):
-            # Merge edited_df terug met originele rows (voor foto's etc.)
-            merged_export = []
-            for _, row in edited_df.iterrows():
-                handle = row.get("handle", "")
-                orig = next((r for r in rows if r.get("handle") == handle), {})
-                merged = {**orig, **row.to_dict()}
-                merged_export.append(merged)
-
-            with st.spinner("Excel bouwen..."):
-                xlsx = _build_excel(merged_export)
-            vendor_label = (merged_export[0].get("vendor") or "producten").replace(" ", "_") if merged_export else "export"
-            st.download_button(
-                label=f"💾 Download ({n} producten)",
-                data=xlsx,
-                file_name=f"hextom_{vendor_label}_herverwerkt_{n}st.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="hvp_dl",
-            )
-
-    st.divider()
-
-    # Terug-knop
-    if st.button("Terug naar Archief herverwerken", key="hvp_terug"):
-        st.session_state.pop("hvp_ai_klaar", None)
-        st.switch_page("pages/08_Herverwerk.py")
+    stap = st.session_state["hvp_stap"]
+    if stap == 1:
+        _stap_namen()
+    elif stap == 2:
+        _stap_categorie_kleur()
+    elif stap == 3:
+        _stap_meta()
+    elif stap == 4:
+        _stap_export()
