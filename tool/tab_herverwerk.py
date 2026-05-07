@@ -408,12 +408,12 @@ def render() -> None:
 
     with a3:
         st.markdown("**C — Stuur naar Transform**")
-        st.caption("Zet curated IDs klaar voor het Transform-scherm (max 25).")
+        st.caption("Zet curated IDs klaar voor het Transform-scherm (max 100).")
         curated_ids_transform = [r["id"] for r in selected_rows if r.get("id") and r.get("pipeline_status")]
-        n = min(len(curated_ids_transform), 25)
+        n = min(len(curated_ids_transform), 100)
         if curated_ids_transform:
             if st.button(f"✨ Stuur {n} naar Transform", key="hv_to_transform"):
-                st.session_state["selected_ids"] = curated_ids_transform[:25]
+                st.session_state["selected_ids"] = curated_ids_transform[:100]
                 st.session_state["transform_from_producten"] = True
                 st.success(f"✅ {n} IDs klaargezet. Ga naar **Transform** in het menu.")
         else:
