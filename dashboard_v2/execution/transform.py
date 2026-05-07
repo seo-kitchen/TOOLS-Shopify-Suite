@@ -613,7 +613,7 @@ def _single_color(raw: str, claude) -> tuple[str, str]:
 
 def ask_claude_translate(term: str, context: str, claude) -> str:
     response = claude.messages.create(
-        model="claude-opus-4-6",
+        model="claude-sonnet-4-6",
         max_tokens=60,
         messages=[{
             "role": "user",
@@ -979,7 +979,7 @@ def transform(fase: str, limit: int | None = None):
                 f"Geef alleen de meta description terug."
             )
             meta_resp = claude.messages.create(
-                model="claude-opus-4-6",
+                model="claude-sonnet-4-6",
                 max_tokens=200,
                 messages=[{"role": "user", "content": meta_prompt}],
             )
@@ -1191,7 +1191,7 @@ def transform_batch(
                 f"Geef alleen de meta description terug."
             )
             meta_resp = claude.messages.create(
-                model="claude-opus-4-6",
+                model="claude-sonnet-4-6",
                 max_tokens=200,
                 messages=[{"role": "user", "content": meta_prompt}],
             )
