@@ -506,6 +506,58 @@ def _save_rule(stap: int, rule_type: str, action: dict, scope: str, input_text: 
         return False
 
 
+def _list_active_rules(stap: int) -> list[dict]:
+    """Haal actieve regels op voor een stap, nieuwste eerst."""
+    stap_naam = _CHAT_STAP_NAAM.get(stap)
+    if not stap_naam:
+        return []
+    try:
+        rows = _get_sb().table("seo_learnings").select("*") \
+            .eq("status", "applied").eq("stap", stap_naam) \
+            .order("applied_at", desc=True).execute().data or []
+        return [r for r in rows if r.get("rule_type") != "pipeline_draft"]
+    except Exception:
+        return []
+
+
+def _deactivate_rule(rule_id: str) -> bool:
+    try:
+        _get_sb().table("seo_learnings").update({"status": "superseded"}) \
+          .eq("id", rule_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+def _rule_samenvatting(L: dict) -> str:
+    """Maak een korte 1-regel samenvatting van een regel."""
+    rt = L.get("rule_type", "?")
+    act = L.get("action") or {}
+    if rt == "title_strip":
+        woorden = act.get("strip") or []
+        return f"strip: {', '.join(woorden[:5])}{' …' if len(woorden) > 5 else ''}"
+    if rt == "title_replace" or rt == "meta_replace":
+        paren = act.get("replace") or []
+        if paren:
+            p = paren[0]
+            return f"vervang '{p.get('from','')}' → '{p.get('to','')}'"
+        return "vervang (leeg)"
+    if rt in ("title_instruction", "meta_instruction"):
+        return (act.get("instruction") or "")[:80]
+    if rt == "name_rule":
+        return f"als naam '{act.get('zoekwoord','')}' → {act.get('sub_subcategorie','')}"
+    if rt == "name_rule_bulk":
+        regels = act.get("regels") or []
+        return f"{len(regels)} naam-regels"
+    if rt == "translation":
+        return f"{act.get('veld','')}: {act.get('en','')} → {act.get('nl','')}"
+    if rt == "category_override":
+        return f"{len(act.get('skus') or [])} SKU's → {act.get('subcategorie','')}/{act.get('sub_subcategorie','')}"
+    if rt == "bulk_classify":
+        return f"classificeer {act.get('target_field','?')}: {(act.get('criterion') or '')[:60]}"
+    return (L.get("input_text") or "")[:80]
+
+
 def _chat_box(stap: int, kolom_voorbeeld: str) -> None:
     """Render chat-input onderaan een stap.
 
@@ -523,7 +575,37 @@ def _chat_box(stap: int, kolom_voorbeeld: str) -> None:
     if st.session_state.pop(flag_clear, False):
         st.session_state[key_in] = ""
 
-    with st.expander("💬 Correctie voor deze stap (wordt onthouden)", expanded=False):
+    actief = _list_active_rules(stap)
+
+    with st.expander(
+        f"💬 Correctie voor deze stap ({len(actief)} actieve regels)",
+        expanded=False,
+    ):
+        # ── Actieve regels met deactiveer-knop ──
+        if actief:
+            st.markdown("**Actieve regels (geldt voor toekomstige batches):**")
+            for L in actief[:30]:
+                sam = _rule_samenvatting(L)
+                rt = L.get("rule_type", "?")
+                ts = (L.get("applied_at") or "")[:16].replace("T", " ")
+                cA, cB = st.columns([8, 1])
+                with cA:
+                    st.markdown(
+                        f"<div style='font-family:Inter;font-size:13px;'>"
+                        f"<code style='background:rgba(174,205,246,0.18);padding:1px 6px;border-radius:3px;font-size:11px'>"
+                        f"{rt}</code> {sam} "
+                        f"<span style='color:#888;font-size:11px'>· {ts}</span></div>",
+                        unsafe_allow_html=True,
+                    )
+                with cB:
+                    if st.button("🗑", key=f"hvp_rd_{stap}_{L['id']}",
+                                  help="Deactiveer deze regel"):
+                        if _deactivate_rule(L["id"]):
+                            st.rerun()
+            if len(actief) > 30:
+                st.caption(f"… + {len(actief) - 30} oudere regels (niet getoond)")
+            st.divider()
+
         st.caption(
             "Typ in normaal Nederlands wat er mis gaat. De fix wordt nu toegepast én "
             "opgeslagen zodat het in toekomstige runs ook automatisch gebeurt."
