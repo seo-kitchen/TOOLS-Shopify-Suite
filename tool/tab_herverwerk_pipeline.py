@@ -1044,11 +1044,13 @@ def _stap_namen() -> None:
                 st.error(f"Fout: {e}")
         return
 
-    # ── Snelle vervanging: letterlijk X → Y in alle titels, geen AI ──
-    with st.expander("🎯 Snelle vervanging: X → Y in alle NL-titels (geen AI)", expanded=False):
+    # ── Snelle vervanging: letterlijk X → Y, zoekt in EN én NL titel ──
+    with st.expander("🎯 Snelle vervanging: X → Y in titels (geen AI)", expanded=False):
         st.caption(
-            "Letterlijke tekst-vervanging in alle NL-titels. "
-            "Wat je links typt wordt 1-op-1 vervangen door wat rechts staat. Hoofdletter-ongevoelig."
+            "Letterlijke tekst-vervanging in titels. Zoekt eerst in de NL-titel; "
+            "als daar geen match is, zoekt 'ie ook in de originele Engelse titel "
+            "(handig om foute vertalingen van Haiku te corrigeren). "
+            "Hoofdletter-ongevoelig."
         )
         cV1, cV2 = st.columns(2)
         with cV1:
@@ -1058,26 +1060,38 @@ def _stap_namen() -> None:
             qr_to = st.text_input("Naar", key="hvp_qrv_to",
                                    placeholder="bv. Plastic inzetpot")
 
-        # Preview matches
+        # Preview matches: NL eerst, anders EN
         from_l = (qr_from or "").strip()
         to_v = (qr_to or "").strip()
-        n_hit = 0
+        n_nl = 0
+        n_en = 0
         voorbeelden = []
         if from_l:
             patroon = re.compile(re.escape(from_l), re.IGNORECASE)
             for r in data:
-                naam = r.get("product_title_nl", "") or ""
-                if patroon.search(naam):
-                    n_hit += 1
+                nl = r.get("product_title_nl", "") or ""
+                en = r.get("product_title", "") or r.get("product_name_raw", "") or ""
+                if patroon.search(nl):
+                    n_nl += 1
                     if len(voorbeelden) < 5:
-                        voorbeelden.append((naam, patroon.sub(to_v, naam)))
-            st.info(f"📊 {n_hit} titels worden aangepast")
+                        voorbeelden.append(("NL", nl, patroon.sub(to_v, nl)))
+                elif patroon.search(en):
+                    n_en += 1
+                    if len(voorbeelden) < 5:
+                        # NL-titel wordt overschreven met EN-titel waarin term vervangen is
+                        voorbeelden.append(("EN→NL", nl, patroon.sub(to_v, en)))
+            n_hit = n_nl + n_en
+            st.info(f"📊 {n_hit} titels worden aangepast"
+                    + (f" ({n_nl} match in NL, {n_en} match in EN→NL)" if n_en else ""))
             if voorbeelden:
                 with st.expander("Voorbeeld vóór → na", expanded=True):
-                    for v_oud, v_nw in voorbeelden:
+                    for soort, v_oud, v_nw in voorbeelden:
+                        st.caption(soort)
                         st.text(f"OUD:  {v_oud}")
                         st.text(f"NIEUW: {v_nw}")
                         st.divider()
+        else:
+            n_hit = 0
 
         onthouden = st.checkbox("Onthouden voor toekomstige batches", value=True, key="hvp_qrv_mem")
 
@@ -1089,9 +1103,13 @@ def _stap_namen() -> None:
         ):
             patroon = re.compile(re.escape(from_l), re.IGNORECASE)
             for r in data:
-                naam = r.get("product_title_nl", "") or ""
-                if patroon.search(naam):
-                    r["product_title_nl"] = patroon.sub(to_v, naam)
+                nl = r.get("product_title_nl", "") or ""
+                en = r.get("product_title", "") or r.get("product_name_raw", "") or ""
+                if patroon.search(nl):
+                    r["product_title_nl"] = patroon.sub(to_v, nl)
+                elif patroon.search(en):
+                    # Bouw nieuwe NL-titel op basis van EN met term vervangen
+                    r["product_title_nl"] = patroon.sub(to_v, en)
             st.session_state["hvp_data"] = data
             if onthouden:
                 try:
@@ -1100,7 +1118,7 @@ def _stap_namen() -> None:
                         "rule_type": "title_replace",
                         "scope": "alle",
                         "input_text": f"snelle vervanging: {from_l} → {to_v}",
-                        "action": {"replace": [{"from": from_l, "to": to_v}]},
+                        "action": {"replace": [{"from": from_l, "to": to_v}], "match_in_en": True},
                         "status": "applied",
                         "applied_at": datetime.utcnow().isoformat(),
                         "applied_by": "chef@seokitchen.nl",
