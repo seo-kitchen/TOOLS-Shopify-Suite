@@ -490,11 +490,36 @@ def render() -> None:
     sb = get_supabase()
     client_id = get_client_id()
 
-    col_refresh, col_spacer = st.columns([1, 5])
+    col_refresh, col_resync, col_spacer = st.columns([1, 1.4, 4])
     with col_refresh:
-        if st.button("🔄 Ververs", key="st_refresh"):
+        if st.button("🔄 Ververs", key="st_refresh",
+                     help="Wist alleen de cache. Snel — maar haalt geen nieuwe data uit Shopify."):
             st.cache_data.clear()
             st.rerun()
+    with col_resync:
+        do_resync = st.button(
+            "🔁 Resync Shopify",
+            key="st_resync_meta",
+            help="Haalt alle actieve producten opnieuw op uit Shopify en herberekent "
+                 "title/desc-status. Duurt ~30-60s. Gebruik dit na fixes in Shopify.",
+        )
+    if do_resync:
+        import subprocess, sys as _sys
+        root   = str(Path(__file__).parent.parent)
+        script = str(Path(root) / "execution" / "shopify_meta_sync.py")
+        with st.spinner("Shopify meta-sync bezig (~30-60s) ..."):
+            result = subprocess.run(
+                [_sys.executable, script],
+                capture_output=True, text=True, cwd=root, timeout=300, encoding="utf-8",
+            )
+        if result.returncode == 0:
+            st.success("✅ Shopify meta-sync klaar — data ververst.")
+            st.cache_data.clear()
+            st.rerun()
+        else:
+            st.error("❌ Sync faalde — zie log hieronder")
+            with st.expander("Log", expanded=True):
+                st.code(result.stdout + result.stderr or "(geen output)")
 
     # ── Shopify teller (context) ───────────────────────────────────────────────
     with st.spinner("Shopify ophalen..."):
