@@ -264,6 +264,10 @@ def render() -> None:
         "- *Zet meta_description leeg voor SKU's beginnend met test_*\n"
         "- *In Product Description: vervang 'Ontdek' door 'Bekijk'*"
     )
+    # Clear-flag uitvoeren VOOR widget wordt aangemaakt
+    if st.session_state.pop("qu_instr_clear", False):
+        st.session_state["qu_instr"] = ""
+
     instr = st.text_area("Instructie", height=100, key="qu_instr",
                           placeholder="bv. 'Alle Vendor naar Serax behalve waar Titel Advies bevat'")
 
@@ -312,7 +316,7 @@ def render() -> None:
             })
 
         st.session_state["qu_df"] = df_new
-        st.session_state["qu_instr"] = ""
+        st.session_state["qu_instr_clear"] = True
         st.success(f"✅ {total_hit} cellen / rijen aangepast.")
         st.rerun()
 

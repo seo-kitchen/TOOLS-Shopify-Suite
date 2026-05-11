@@ -264,14 +264,20 @@ def _chat_box(stap: int, kolom_voorbeeld: str) -> None:
     data: list[dict] = st.session_state["hvp_data"]
     voorbeelden = [r.get(kolom_voorbeeld, "") for r in data if r.get(kolom_voorbeeld)][:10]
 
+    key_in = f"hvp_chat_in_{stap}"
+    key_btn = f"hvp_chat_btn_{stap}"
+    key_clr = f"hvp_chat_clr_{stap}"
+    flag_clear = f"hvp_chat_clear_{stap}"
+
+    # Clear-flag uitvoeren VOOR de widget wordt aangemaakt (Streamlit-regel)
+    if st.session_state.pop(flag_clear, False):
+        st.session_state[key_in] = ""
+
     with st.expander("💬 Correctie voor deze stap (wordt onthouden)", expanded=False):
         st.caption(
             "Typ in normaal Nederlands wat er mis gaat. De fix wordt nu toegepast én "
             "opgeslagen zodat het in toekomstige runs ook automatisch gebeurt."
         )
-        key_in = f"hvp_chat_in_{stap}"
-        key_btn = f"hvp_chat_btn_{stap}"
-        key_clr = f"hvp_chat_clr_{stap}"
 
         txt = st.text_area(
             "Feedback",
@@ -289,7 +295,7 @@ def _chat_box(stap: int, kolom_voorbeeld: str) -> None:
                             disabled=not txt.strip(), key=key_btn)
         with c2:
             if st.button("Wis", key=key_clr):
-                st.session_state[key_in] = ""
+                st.session_state[flag_clear] = True
                 st.rerun()
 
         if doe and txt.strip():
@@ -318,7 +324,7 @@ def _chat_box(stap: int, kolom_voorbeeld: str) -> None:
             st.success(msg)
             if expl:
                 st.caption(expl)
-            st.session_state[key_in] = ""
+            st.session_state[flag_clear] = True
             st.rerun()
 
 
