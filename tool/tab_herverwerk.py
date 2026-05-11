@@ -505,6 +505,65 @@ def render() -> None:
         "Filter op merk en status, selecteer, en exporteer of herstart de pipeline."
     )
 
+    # ── Bron-toggle: nog niet verwerkte producten uit Supabase ───────────────
+    with st.expander("📦 Of: nog niet verwerkte producten uit Supabase (niet via Shopify)", expanded=False):
+        st.caption(
+            "Laadt producten die wel in `products_raw` zitten maar nog niet in de pipeline "
+            "(geen `ready` record). Ideaal voor verse leverancier-imports die nog niet "
+            "in Shopify staan."
+        )
+        sup_keuze = st.selectbox(
+            "Leverancier",
+            ["pottery_pots", "serax", "salt_pepper", "printworks"],
+            key="hv_raw_supplier",
+        )
+        # Beschikbare fases voor deze supplier ophalen
+        try:
+            fase_res = _get_sb().table("products_raw").select("fase") \
+                .eq("supplier", sup_keuze).execute().data or []
+            fases_avail = sorted(set(r["fase"] for r in fase_res if r.get("fase")))
+        except Exception:
+            fases_avail = []
+        fc1, fc2 = st.columns([2, 2])
+        with fc1:
+            fase_keuze = st.selectbox(
+                "Fase (optioneel)",
+                ["Alle"] + fases_avail,
+                key="hv_raw_fase",
+            )
+        with fc2:
+            raw_limit = st.number_input("Max", 50, 2000, 500, 50, key="hv_raw_lim")
+
+        if st.button("🔍 Laad nog niet verwerkte producten", type="primary", key="hv_raw_load"):
+            with st.spinner("Zoeken in products_raw..."):
+                sb = _get_sb()
+                # Haal alle raw-SKUs op voor supplier + (optioneel) fase
+                q = sb.table("products_raw").select("sku").eq("supplier", sup_keuze)
+                if fase_keuze != "Alle":
+                    q = q.eq("fase", fase_keuze)
+                raw_rows = q.limit(int(raw_limit) * 3).execute().data or []
+                raw_skus = [r["sku"] for r in raw_rows if r.get("sku")]
+                # Haal SKUs op die al 'ready' zijn in curated
+                ready_skus: set[str] = set()
+                if raw_skus:
+                    for i in range(0, len(raw_skus), 200):
+                        chunk = raw_skus[i:i + 200]
+                        r2 = sb.table("products_curated").select("sku") \
+                            .eq("pipeline_status", "ready").in_("sku", chunk).execute().data or []
+                        ready_skus.update(x["sku"] for x in r2)
+                te_doen = [s for s in raw_skus if s not in ready_skus][:int(raw_limit)]
+
+            if not te_doen:
+                st.warning(f"Geen niet-verwerkte SKUs gevonden voor {sup_keuze} / {fase_keuze}.")
+            else:
+                with st.spinner(f"Ophalen van {len(te_doen)} producten..."):
+                    rows = _load_by_skus(te_doen)
+                st.session_state["hv_geladen"] = True
+                st.session_state["hv_rows_override"] = rows
+                st.success(f"✅ {len(rows)} producten geladen (van {len(raw_skus)} totaal, "
+                           f"{len(ready_skus)} al verwerkt overgeslagen).")
+                st.rerun()
+
     # ── SKU-upload (alternatief voor filter) ─────────────────────────────────
     with st.expander("📋 Of: upload SKU-lijst (CSV / Excel / TXT)", expanded=False):
         st.caption(
