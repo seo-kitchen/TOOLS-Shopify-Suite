@@ -532,7 +532,7 @@ def render() -> None:
             except Exception as e:
                 st.error(f"Bestand niet leesbaar: {e}")
 
-    f1, f2, f3 = st.columns([2, 2, 3])
+    f1, f2, f3, f4 = st.columns([2, 2, 2, 3])
     with f1:
         vendor = st.selectbox("Merk", ["Alle"] + LEVERANCIERS, key="hv_vendor")
     with f2:
@@ -540,6 +540,14 @@ def render() -> None:
             "Status in Shopify", ["Alle"] + SHOPIFY_STATUSSEN, index=2, key="hv_sh"
         )  # default: archived
     with f3:
+        pipeline_filter = st.selectbox(
+            "Pipeline-status",
+            ["Niet 'ready' (default)", "Alle", "Nog niet verwerkt", "In behandeling", "Klaar (ready)"],
+            index=0,
+            key="hv_pipe",
+            help="'Niet ready' = alles behalve wat al door de pipeline is. Zo zie je geen dubbel werk.",
+        )
+    with f4:
         zoek = st.text_input("Zoek (handle / productnaam)", placeholder="bijv. pottery-pots-vaas", key="hv_zoek")
 
     col_lim, col_btn, col_ref = st.columns([2, 1, 1])
@@ -572,8 +580,24 @@ def render() -> None:
                 st.error(f"❌ Fout: {e}")
                 return
 
+    # Pipeline-status filter toepassen
+    voor_filter = len(rows)
+    if pipeline_filter == "Niet 'ready' (default)":
+        rows = [r for r in rows if (r.get("pipeline_status") or "") != "ready"]
+    elif pipeline_filter == "Nog niet verwerkt":
+        rows = [r for r in rows if not (r.get("pipeline_status") or "").strip()
+                or (r.get("pipeline_status") or "") == "raw"]
+    elif pipeline_filter == "In behandeling":
+        rows = [r for r in rows if (r.get("pipeline_status") or "") == "in_process"]
+    elif pipeline_filter == "Klaar (ready)":
+        rows = [r for r in rows if (r.get("pipeline_status") or "") == "ready"]
+
+    verborgen = voor_filter - len(rows)
+    if verborgen > 0:
+        st.caption(f"⚙️ {verborgen} producten verborgen door pipeline-filter — verander filter naar 'Alle' om ze te zien.")
+
     if not rows:
-        st.warning(f"Geen producten gevonden — vendor='{vendor}', status='{shopify_status}'.")
+        st.warning(f"Geen producten gevonden — vendor='{vendor}', status='{shopify_status}', pipeline='{pipeline_filter}'.")
         return
 
     df = pd.DataFrame(rows)
