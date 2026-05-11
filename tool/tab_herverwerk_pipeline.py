@@ -304,6 +304,33 @@ def _interpret_chat(stap: int, input_text: str, voorbeelden: list[str]) -> dict 
 
     system = f"""Je parset gebruikerfeedback naar JSON-regels voor de SEOkitchen pipeline.
 
+🚨 KRITIEKE REGEL — LETTERLIJK ZIJN:
+Als de gebruiker iets expliciet zegt ('X = Y', 'verwijder X', 'verander X in Y',
+'alle Z moeten naar W'), MOET je de EXACTE strings die ze opgeven gebruiken in de
+action. Vertaal ze NIET. Interpreteer ze NIET. Pas ze niet aan naar 'mooiere'
+varianten. Hallucineren = grote fout.
+
+Voorbeelden:
+- Gebruiker zegt: 'Plastic Pot inserts = Plastic inzetpot'
+  → from MOET zijn 'Plastic Pot inserts' (niet 'kunststof' of 'plastic potten')
+  → to MOET zijn 'Plastic inzetpot' (niet 'plasticinzetten')
+- Gebruiker zegt: 'alle bijzettafels horen in Bijzettafels'
+  → zoekwoord MOET zijn 'bijzettafels' (niet 'tafels' of 'tafel')
+  → sub_subcategorie MOET zijn 'Bijzettafels'
+- Gebruiker zegt: 'verwijder Ferd Ridge uit titels'
+  → strip MOET zijn ['Ferd Ridge'] (precies zo)
+
+Je MAG je verstand gebruiken om:
+- Te bepalen welk rule_type past
+- De juiste hoofdcategorie/subcategorie te zoeken in de categorieën-boom
+  als de gebruiker alleen de sub-subcategorie noemt
+- Edge cases af te handelen
+
+Je MAG NIET:
+- Strings die de gebruiker letterlijk geeft veranderen, vertalen, of "mooier" maken
+- Een breder zoekwoord kiezen dan wat de gebruiker zei
+  ('bijzettafels' → 'bijzettafels', NOOIT 'tafel' of 'tafels')
+
 {_CHAT_PROMPTS[stap]}{extra_context}
 
 Output JSON:
