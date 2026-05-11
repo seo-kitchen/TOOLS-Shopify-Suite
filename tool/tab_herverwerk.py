@@ -234,12 +234,13 @@ def _load(vendor: str, shopify_status: str, zoek: str, limit: int) -> list[dict]
         except Exception:
             pass
 
-    # Stap 4: verrijk met products_raw (foto's, EAN, afmetingen) via SKU
+    # Stap 4: verrijk met products_raw (foto's, EAN, afmetingen, fase) via SKU
     raw_by_sku: dict[str, dict] = {}
     if skus:
         try:
             res = sb.table("products_raw").select(
-                "sku,ean_piece,designer,hoogte_cm,lengte_cm,breedte_cm,"
+                "sku,supplier,fase,ean_piece,designer,hoogte_cm,lengte_cm,breedte_cm,"
+                "leverancier_category,leverancier_item_cat,"
                 "photo_packshot_1,photo_packshot_2,photo_packshot_3,"
                 "photo_packshot_4,photo_packshot_5,"
                 "photo_lifestyle_1,photo_lifestyle_2,photo_lifestyle_3,"
@@ -605,8 +606,16 @@ def render() -> None:
         else:
             df[tgt] = "—"
 
-    TOON = ["handle", "product_title", "vendor", "product_status",
-            "pipeline_status", "hoofdcategorie",
+    # Tags inkorten voor display zodat de cel niet te breed wordt
+    if "tags" in df.columns:
+        df["tags_kort"] = df["tags"].apply(
+            lambda v: (str(v)[:60] + "…") if v and len(str(v)) > 60 else str(v or "")
+        )
+    else:
+        df["tags_kort"] = ""
+
+    TOON = ["handle", "product_title", "vendor", "fase", "product_status",
+            "pipeline_status", "hoofdcategorie", "tags_kort",
             "heeft_title", "heeft_desc", "afmetingen", "price"]
     for col in TOON:
         if col not in df.columns:
@@ -636,9 +645,13 @@ def render() -> None:
             "handle":          st.column_config.TextColumn("Handle", disabled=True, width="medium"),
             "product_title":   st.column_config.TextColumn("Titel (Shopify)", disabled=True, width="large"),
             "vendor":          st.column_config.TextColumn("Merk", disabled=True, width="small"),
+            "fase":            st.column_config.TextColumn("Fase", disabled=True, width="small",
+                                  help="Bron-fase uit products_raw (bv. fase4, august2026)"),
             "product_status":  st.column_config.TextColumn("Shopify", disabled=True, width="small"),
             "pipeline_status": st.column_config.TextColumn("Pipeline", disabled=True, width="small"),
             "hoofdcategorie":  st.column_config.TextColumn("Categorie", disabled=True, width="medium"),
+            "tags_kort":       st.column_config.TextColumn("Tags", disabled=True, width="large",
+                                  help="Huidige Shopify tags (eerste 60 tekens)"),
             "heeft_title":     st.column_config.TextColumn("Meta title", disabled=True, width="small",
                                   help="✅ = Shopify heeft al een meta title"),
             "heeft_desc":      st.column_config.TextColumn("Meta desc", disabled=True, width="small",
@@ -646,8 +659,8 @@ def render() -> None:
             "afmetingen":      st.column_config.TextColumn("Afmetingen (cm)", disabled=True, width="medium"),
             "price":           st.column_config.NumberColumn("Prijs", disabled=True, width="small", format="€ %.2f"),
         },
-        column_order=["_select", "handle", "product_title", "vendor",
-                      "product_status", "pipeline_status", "hoofdcategorie",
+        column_order=["_select", "handle", "product_title", "vendor", "fase",
+                      "product_status", "pipeline_status", "hoofdcategorie", "tags_kort",
                       "heeft_title", "heeft_desc", "afmetingen", "price"],
         hide_index=True,
         disabled=["handle"] + TOON[1:],
