@@ -398,12 +398,120 @@ def _run_inline_transform(rows: list[dict]) -> None:
         )
 
 
+def _load_skus_from_file(uploaded) -> list[str]:
+    """Lees SKUs uit CSV/Excel/TXT — accepteert kolom 'sku', 'SKU', of eerste kolom."""
+    naam = uploaded.name.lower()
+    raw = uploaded.read()
+    if naam.endswith((".xlsx", ".xls")):
+        df = pd.read_excel(io.BytesIO(raw), dtype=str, engine="openpyxl")
+    elif naam.endswith(".csv"):
+        for enc in ("utf-8-sig", "utf-8", "cp1252"):
+            try:
+                df = pd.read_csv(io.BytesIO(raw), dtype=str, encoding=enc, keep_default_na=False)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            return []
+    else:
+        # txt: één SKU per regel
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode("cp1252", errors="ignore")
+        return [ln.strip() for ln in text.splitlines() if ln.strip()]
+
+    # Zoek SKU-kolom
+    for kandidaat in ("sku", "SKU", "Sku", "brand_id", "Variant SKU", "artikelnummer"):
+        if kandidaat in df.columns:
+            return [str(s).strip() for s in df[kandidaat].dropna().tolist() if str(s).strip()]
+    # Fallback: eerste kolom
+    return [str(s).strip() for s in df.iloc[:, 0].dropna().tolist() if str(s).strip()]
+
+
+def _load_by_skus(skus: list[str]) -> list[dict]:
+    """Laad producten op basis van een SKU-lijst — direct uit Supabase, geen Shopify-search nodig."""
+    if not skus:
+        return []
+    sb = _get_sb()
+
+    # products_raw — basis + foto's
+    raw_map: dict[str, dict] = {}
+    for i in range(0, len(skus), 200):
+        chunk = skus[i:i + 200]
+        res = sb.table("products_raw").select(
+            "sku,supplier,fase,product_name_raw,ean_piece,ean_shopify,designer,"
+            "kleur_en,materiaal_raw,hoogte_cm,lengte_cm,breedte_cm,"
+            "leverancier_category,leverancier_item_cat,"
+            "photo_packshot_1,photo_packshot_2,photo_packshot_3,photo_packshot_4,photo_packshot_5,"
+            "photo_lifestyle_1,photo_lifestyle_2,photo_lifestyle_3,photo_lifestyle_4,photo_lifestyle_5"
+        ).in_("sku", chunk).execute().data or []
+        for r in res:
+            raw_map[r["sku"]] = r
+
+    # products_curated — eventueel bestaande NL-data
+    cur_map: dict[str, dict] = {}
+    for i in range(0, len(skus), 200):
+        chunk = skus[i:i + 200]
+        res = sb.table("products_curated").select(
+            "sku,handle,product_title_nl,hoofdcategorie,subcategorie,sub_subcategorie,"
+            "collectie,materiaal_nl,kleur_nl,meta_description,pipeline_status,"
+            "verkoopprijs,inkoopprijs"
+        ).in_("sku", chunk).execute().data or []
+        for r in res:
+            cur_map[r["sku"]] = r
+
+    merged = []
+    for sku in skus:
+        raw = raw_map.get(sku, {})
+        cur = cur_map.get(sku, {})
+        if not raw and not cur:
+            continue
+        merged.append({
+            **raw,
+            **cur,
+            "sku": sku,
+            "product_title": raw.get("product_name_raw", "") or cur.get("product_title_nl", ""),
+            "vendor": (raw.get("supplier", "") or "").title(),
+            "price": cur.get("verkoopprijs"),
+            "has_image": bool(raw.get("photo_packshot_1")),
+        })
+    return merged
+
+
 def render() -> None:
     st.subheader("Archief herverwerken")
     st.caption(
         "Selecteer producten direct uit Shopify-data — geen Hextom-export nodig. "
         "Filter op merk en status, selecteer, en exporteer of herstart de pipeline."
     )
+
+    # ── SKU-upload (alternatief voor filter) ─────────────────────────────────
+    with st.expander("📋 Of: upload SKU-lijst (CSV / Excel / TXT)", expanded=False):
+        st.caption(
+            "Upload een bestand met SKUs (kolom 'sku', 'brand_id', of eerste kolom). "
+            "Producten worden direct uit Supabase geladen — Shopify-filters worden genegeerd."
+        )
+        sku_file = st.file_uploader("Bestand", type=["csv", "xlsx", "xls", "txt"], key="hv_sku_up")
+        if sku_file:
+            try:
+                skus = _load_skus_from_file(sku_file)
+                st.caption(f"{len(skus)} SKUs gelezen: {', '.join(skus[:5])}{' …' if len(skus) > 5 else ''}")
+                if st.button(f"🔍 Laad deze {len(skus)} producten", type="primary", key="hv_sku_load"):
+                    with st.spinner("Ophalen uit Supabase..."):
+                        rows = _load_by_skus(skus)
+                    if not rows:
+                        st.error(f"Geen producten gevonden voor deze {len(skus)} SKUs in products_raw.")
+                    else:
+                        gemist = len(skus) - len(rows)
+                        if gemist:
+                            st.warning(f"{gemist} SKUs niet gevonden in Supabase (overgeslagen).")
+                        st.session_state["hv_geladen"] = True
+                        st.session_state["hv_rows_override"] = rows
+                        st.success(f"✅ {len(rows)} producten geladen — scroll naar beneden voor de tabel.")
+                        st.rerun()
+            except Exception as e:
+                st.error(f"Bestand niet leesbaar: {e}")
 
     f1, f2, f3 = st.columns([2, 2, 3])
     with f1:
@@ -429,16 +537,21 @@ def render() -> None:
 
     if laden:
         st.session_state["hv_geladen"] = True
+        st.session_state.pop("hv_rows_override", None)  # filter overrult SKU-upload
     if not st.session_state.get("hv_geladen"):
         st.info("Stel filters in en klik **Laad producten** om te beginnen.")
         return
 
-    with st.spinner("Ophalen uit Supabase..."):
-        try:
-            rows = _load(vendor, shopify_status, zoek.strip(), int(limit))
-        except Exception as e:
-            st.error(f"❌ Fout: {e}")
-            return
+    # Als SKU-upload route is gebruikt, gebruik die data
+    if st.session_state.get("hv_rows_override"):
+        rows = st.session_state["hv_rows_override"]
+    else:
+        with st.spinner("Ophalen uit Supabase..."):
+            try:
+                rows = _load(vendor, shopify_status, zoek.strip(), int(limit))
+            except Exception as e:
+                st.error(f"❌ Fout: {e}")
+                return
 
     if not rows:
         st.warning(f"Geen producten gevonden — vendor='{vendor}', status='{shopify_status}'.")

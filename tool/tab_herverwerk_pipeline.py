@@ -1091,6 +1091,7 @@ def _stap_meta() -> None:
         if st.button(f"Schrijf {n} meta descriptions", type="primary", key="hvp_s3_run"):
             try:
                 import anthropic
+                from concurrent.futures import ThreadPoolExecutor, as_completed
                 from execution.transform_v2 import load_active_learnings
                 sb = _get_sb()
                 meta_lr = [L for L in load_active_learnings(sb) if L.get("stap") == "meta"]
@@ -1114,12 +1115,10 @@ def _stap_meta() -> None:
                 if meta_instructies:
                     extra_regels = "\nEXTRA REGELS (uit eerdere feedback):\n- " + "\n- ".join(meta_instructies)
 
-                client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY",""))
-                bar = st.progress(0.0, text=f"Bezig ({len(meta_lr)} actieve meta-regels)...")
+                client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
 
-                for idx, r in enumerate(data):
-                    bar.progress((idx + 1) / n, text=f"{idx+1}/{n}: {r.get('sku','')}")
-
+                def _gen_meta(idx_r):
+                    idx, r = idx_r
                     title  = r.get("product_title_nl", "") or r.get("product_title", "")
                     vendor = r.get("vendor", "") or r.get("supplier", "")
                     subcat = r.get("subcategorie", "")
@@ -1129,14 +1128,12 @@ def _stap_meta() -> None:
                     l = r.get("lengte_cm","") or ""
                     b = r.get("breedte_cm","") or ""
                     afm = f"H {h} x L {l} x B {b} cm" if all([h, l, b]) else ""
-
                     extra = "\n".join(filter(None, [
                         f"Materiaal: {mat}" if mat else "",
                         f"Kleur: {kleur}" if kleur else "",
                         f"Subcategorie: {subcat}" if subcat else "",
                         f"Afmetingen: {afm}" if afm else "",
                     ]))
-
                     try:
                         resp = client.messages.create(
                             model="claude-sonnet-4-6",
@@ -1149,14 +1146,31 @@ def _stap_meta() -> None:
                                 "Geef alleen de meta description terug."}],
                         )
                         meta = resp.content[0].text.strip()[:155]
-                        # Pas meta_replace regels post-hoc toe
                         for fr, to in meta_replaces:
                             meta = re.sub(re.escape(fr), to, meta, flags=re.IGNORECASE)
-                        r["meta_description"] = meta[:155]
-                    except Exception:
-                        r["meta_description"] = ""
+                        return idx, meta[:155], None
+                    except Exception as e:
+                        return idx, "", str(e)
 
-                bar.progress(1.0, text="Klaar.")
+                # Parallel — 10 workers. Anthropic API verdraagt dit ruim;
+                # bij echt grote batches kan je dit verhogen tot 20.
+                WORKERS = 10
+                bar = st.progress(0.0, text=f"Bezig ({len(meta_lr)} actieve meta-regels, {WORKERS} parallel)...")
+                klaar = 0
+                fouten = 0
+                with ThreadPoolExecutor(max_workers=WORKERS) as ex:
+                    futures = {ex.submit(_gen_meta, (i, r)): i for i, r in enumerate(data)}
+                    for fut in as_completed(futures):
+                        idx, meta, err = fut.result()
+                        if err:
+                            fouten += 1
+                            data[idx]["meta_description"] = ""
+                        else:
+                            data[idx]["meta_description"] = meta
+                        klaar += 1
+                        bar.progress(klaar / n, text=f"{klaar}/{n} klaar ({fouten} fouten)")
+
+                bar.progress(1.0, text=f"Klaar — {n - fouten} ok, {fouten} fouten.")
                 st.session_state["hvp_data"] = data
                 st.session_state["hvp_s3_gerund"] = True
                 st.rerun()
