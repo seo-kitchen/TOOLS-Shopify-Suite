@@ -1344,6 +1344,136 @@ def _stap_categorie_kleur() -> None:
                     st.rerun()
                 st.markdown("---")
 
+    # ── Snelle regel — deterministische zoekwoord → categorie toewijzing ──
+    with st.expander("🎯 Snelle regel: zoekwoord → categorie (geen AI, 100% voorspelbaar)", expanded=False):
+        st.caption(
+            "Typ exact het woord dat in productnamen moet voorkomen, kies de categorie, "
+            "zie wat er gaat gebeuren, klik toepassen. Geen LLM, geen verrassingen."
+        )
+
+        cZ, cM = st.columns([3, 1])
+        with cZ:
+            zk = st.text_input("Zoekwoord (komt in productnaam)",
+                                key="hvp_qr_zoek",
+                                placeholder="bv. bijzettafels")
+        with cM:
+            heel_woord = st.checkbox("Alleen heel woord", value=True, key="hvp_qr_wb",
+                                       help="AAN: 'tafels' matcht NIET 'bijzettafels'. UIT: substring-match.")
+
+        # Live preview matches
+        zk_lower = (zk or "").strip().lower()
+        matches: list[dict] = []
+        if zk_lower:
+            patroon = re.compile(rf"\b{re.escape(zk_lower)}\b") if heel_woord else None
+            for r in data:
+                naam = (r.get("product_title_nl") or r.get("product_title") or "").lower()
+                if heel_woord:
+                    if patroon.search(naam):
+                        matches.append(r)
+                else:
+                    if zk_lower in naam:
+                        matches.append(r)
+            st.info(f"📊 {len(matches)} producten matchen op '{zk}'"
+                    + (" (heel woord)" if heel_woord else " (substring)"))
+            if matches:
+                with st.expander(f"Toon {min(10, len(matches))} voorbeelden", expanded=False):
+                    for m in matches[:10]:
+                        st.text(f"{m.get('sku','')} — {m.get('product_title_nl','')}")
+
+        # Categorie-keuze
+        cats_qr = _laad_cats()
+        hoofd_keuzes = sorted(set(c["hoofdcategorie"] for c in cats_qr if c.get("hoofdcategorie")))
+        NEW = "+ Nieuwe…"
+
+        cA, cB, cC = st.columns(3)
+        with cA:
+            hc_sel = st.selectbox("Hoofdcategorie", hoofd_keuzes + [NEW], key="hvp_qr_hc")
+            if hc_sel == NEW:
+                hc_qr = st.text_input("Naam nieuwe hoofd", key="hvp_qr_hcnew",
+                                        placeholder="bv. Meubels").strip()
+            else:
+                hc_qr = hc_sel
+        with cB:
+            if hc_qr and hc_qr not in hoofd_keuzes:
+                sc_qr = st.text_input("Subcategorie (nieuw)", key="hvp_qr_scnew",
+                                        placeholder="bv. Tafels").strip()
+            else:
+                sub_keuzes = sorted(set(c["subcategorie"] for c in cats_qr
+                                         if c.get("hoofdcategorie") == hc_qr and c.get("subcategorie")))
+                sc_sel = st.selectbox("Subcategorie", sub_keuzes + [NEW], key="hvp_qr_sc")
+                if sc_sel == NEW:
+                    sc_qr = st.text_input("Naam nieuwe sub", key="hvp_qr_scinp",
+                                            placeholder="bv. Bijzettafels").strip()
+                else:
+                    sc_qr = sc_sel
+        with cC:
+            nieuw_hc_sc = (hc_qr and hc_qr not in hoofd_keuzes) or \
+                           (sc_qr and sc_qr not in [c["subcategorie"] for c in cats_qr
+                                                       if c.get("hoofdcategorie") == hc_qr])
+            if nieuw_hc_sc:
+                ss_qr = st.text_input("Sub-subcategorie (nieuw)", key="hvp_qr_ssnew",
+                                        placeholder="bv. Bijzettafels").strip()
+            else:
+                ssub_keuzes = sorted(set(c["sub_subcategorie"] for c in cats_qr
+                                           if c.get("hoofdcategorie") == hc_qr
+                                           and c.get("subcategorie") == sc_qr
+                                           and c.get("sub_subcategorie")))
+                ss_sel = st.selectbox("Sub-subcategorie", ssub_keuzes + [NEW], key="hvp_qr_ss")
+                if ss_sel == NEW:
+                    ss_qr = st.text_input("Naam nieuwe sub-sub", key="hvp_qr_ssinp",
+                                            placeholder="bv. Bijzettafels").strip()
+                else:
+                    ss_qr = ss_sel
+
+        ongeldig = []
+        if not zk_lower: ongeldig.append("zoekwoord")
+        if not hc_qr: ongeldig.append("hoofdcategorie")
+        if not sc_qr: ongeldig.append("subcategorie")
+        if not ss_qr: ongeldig.append("sub-subcategorie")
+        if not matches and zk_lower: ongeldig.append("geen matches")
+
+        if st.button(
+            f"✅ Pas toe op {len(matches)} producten + onthou",
+            type="primary",
+            disabled=bool(ongeldig),
+            help=("Vul nog in: " + ", ".join(ongeldig)) if ongeldig else None,
+            key="hvp_qr_apply",
+        ):
+            from execution.transform_v2 import build_tags
+            for r in matches:
+                r["hoofdcategorie"] = hc_qr
+                r["subcategorie"] = sc_qr
+                r["sub_subcategorie"] = ss_qr
+                r["collectie"] = sc_qr
+                r["_cat_gemapt"] = True
+                extra_t = [r.get("sub_subcategorie_2")] if r.get("sub_subcategorie_2") else None
+                r["tags"] = build_tags(hc_qr, sc_qr, ss_qr, r.get("fase",""), extra_tags=extra_t)
+            st.session_state["hvp_data"] = data
+            # Sla als applied name_rule op
+            try:
+                _get_sb().table("seo_learnings").insert({
+                    "stap": "categorie",
+                    "rule_type": "name_rule",
+                    "scope": "alle",
+                    "input_text": f"snelle regel: {zk} → {hc_qr}/{sc_qr}/{ss_qr}",
+                    "action": {
+                        "zoekwoord": zk_lower,
+                        "hoofdcategorie": hc_qr,
+                        "subcategorie": sc_qr,
+                        "sub_subcategorie": ss_qr,
+                        "is_extra": False,
+                        "whole_word": heel_woord,
+                    },
+                    "status": "applied",
+                    "applied_at": datetime.utcnow().isoformat(),
+                    "applied_by": "chef@seokitchen.nl",
+                    "applied_rows": len(matches),
+                }).execute()
+            except Exception as e:
+                st.warning(f"Regel toegepast maar niet opgeslagen: {e}")
+            st.success(f"✅ {len(matches)} producten naar {hc_qr} / {sc_qr} / {ss_qr} · regel onthouden")
+            st.rerun()
+
     # ── Bewerkbare tabel ──
     st.markdown("**Controleer en pas aan:**")
     df = pd.DataFrame([{
