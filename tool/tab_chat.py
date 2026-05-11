@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 
 import pandas as pd
 import streamlit as st
@@ -106,6 +107,38 @@ TOOLS = [
             "required": ["updates", "samenvatting"],
         },
     },
+    {
+        "name": "bouw_hextom_export",
+        "description": (
+            "Bouw een Hextom-formaat Excel-bestand voor download. "
+            "Gebruik dit ALTIJD wanneer de gebruiker om een download/export/Excel/Hextom vraagt — "
+            "schrijf NOOIT een CSV of tabel als tekst in je antwoord. "
+            "De tool haalt alle benodigde data uit Supabase (naam, prijs, categorie, materiaal, "
+            "foto's, EAN, afmetingen) en bouwt het Hextom-Excel klaar. Na deze tool verschijnt "
+            "een download-knop in de UI — bevestig kort dat het klaarstaat, geef geen inhoud terug."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "skus": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Lijst SKU's voor de export. Verzamel deze eerst via zoek_pipeline "
+                        "of zoek_producten. SKU's die niet bestaan in products_raw worden overgeslagen."
+                    ),
+                },
+                "bestandsnaam": {
+                    "type": "string",
+                    "description": (
+                        "Voorgestelde bestandsnaam zonder extensie (bv. 'hextom_pottery_archief'). "
+                        "Aantal producten en .xlsx worden automatisch toegevoegd."
+                    ),
+                },
+            },
+            "required": ["skus"],
+        },
+    },
 ]
 
 SYSTEM = """Je bent een data-assistent voor een Nederlandse webshop (SEOkitchen).
@@ -129,6 +162,7 @@ Je hebt toegang tot twee databases via tools.
 ## Gedragsregels
 - Gebruik altijd eerst een zoek-tool om data op te halen voordat je conclusies trekt.
 - Stel updates voor via stel_updates_voor — schrijf NOOIT direct zonder bevestiging.
+- Voor downloads/exports/Excel-bestanden: ALTIJD bouw_hextom_export aanroepen, NOOIT een CSV of tabel als tekst in je antwoord plakken. De gebruiker wil een echt bestand.
 - Wees bondig: geef een korte samenvatting + de data, geen lange uitleg.
 - Taal: Nederlands.
 - Als een vraag onduidelijk is: zoek in beide databases en combineer de resultaten.
@@ -351,6 +385,45 @@ def _run_claude(messages: list[dict]) -> tuple[str, list[dict] | None]:
                     "content": f"Updates klaargezet voor bevestiging: {len(pending_updates)} items. Samenvatting: {sam}",
                 })
 
+            elif tc.name == "bouw_hextom_export":
+                try:
+                    from tab_herverwerk import _build_hextom_excel, _load_by_skus
+                    skus = [s for s in (tc.input.get("skus") or []) if s]
+                    if not skus:
+                        result_str = "Fout: lege SKU-lijst — geef een lijst SKU's mee."
+                    else:
+                        rows = _load_by_skus(skus)
+                        if not rows:
+                            result_str = (
+                                f"Geen producten gevonden in products_raw voor de {len(skus)} "
+                                "SKU's. Controleer of de SKU's kloppen."
+                            )
+                        else:
+                            xlsx_bytes = _build_hextom_excel(rows)
+                            voorgesteld = (tc.input.get("bestandsnaam") or "hextom_export").strip()
+                            voorgesteld = re.sub(r"[^A-Za-z0-9_-]+", "_", voorgesteld).strip("_")
+                            if not voorgesteld:
+                                voorgesteld = "hextom_export"
+                            filename = f"{voorgesteld}_{len(rows)}st.xlsx"
+                            st.session_state["chat_download_pending"] = {
+                                "filename": filename,
+                                "data":     xlsx_bytes,
+                                "count":    len(rows),
+                                "gemist":   len(skus) - len(rows),
+                            }
+                            result_str = (
+                                f"Hextom Excel klaar: {len(rows)} producten in '{filename}'. "
+                                f"De download-knop verschijnt in de UI. "
+                                "Bevestig kort dat het klaarstaat — plak GEEN inhoud."
+                            )
+                except Exception as e:
+                    result_str = f"Fout bij bouwen Hextom: {e}"
+                tool_results_pending.append({
+                    "type": "tool_result",
+                    "tool_use_id": tc.id,
+                    "content": result_str,
+                })
+
         # Voeg assistant-bericht + tool-resultaten toe
         current_messages = current_messages + [
             {"role": "assistant", "content": resp.content},
@@ -387,6 +460,8 @@ def render() -> None:
         st.session_state["chat_history"] = []
     if "chat_pending_updates" not in st.session_state:
         st.session_state["chat_pending_updates"] = None
+    if "chat_download_pending" not in st.session_state:
+        st.session_state["chat_download_pending"] = None
 
     # Toon berichten
     for msg in st.session_state["chat_history"]:
@@ -465,6 +540,27 @@ def render() -> None:
                 key="chat_dl",
             )
 
+    # Wachtende Hextom-download
+    if st.session_state["chat_download_pending"]:
+        dl = st.session_state["chat_download_pending"]
+        st.divider()
+        gemist_txt = f" ({dl['gemist']} SKU's niet gevonden)" if dl.get("gemist") else ""
+        st.markdown(f"### 📥 Hextom Excel klaar — {dl['count']} producten{gemist_txt}")
+        c_dl, c_clr = st.columns([3, 1])
+        with c_dl:
+            st.download_button(
+                f"💾 Download {dl['filename']}",
+                data=dl["data"],
+                file_name=dl["filename"],
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="chat_hextom_dl",
+                type="primary",
+            )
+        with c_clr:
+            if st.button("Sluit", key="chat_hextom_clr"):
+                st.session_state["chat_download_pending"] = None
+                st.rerun()
+
     # Chat-input
     vraag = st.chat_input("Stel een vraag over de productdata...")
     if vraag:
@@ -500,4 +596,5 @@ def render() -> None:
         if st.button("🗑 Wis gesprek", key="chat_wis"):
             st.session_state["chat_history"] = []
             st.session_state["chat_pending_updates"] = None
+            st.session_state["chat_download_pending"] = None
             st.rerun()
