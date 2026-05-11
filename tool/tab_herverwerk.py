@@ -234,12 +234,13 @@ def _load(vendor: str, shopify_status: str, zoek: str, limit: int) -> list[dict]
         except Exception:
             pass
 
-    # Stap 4: verrijk met products_raw (foto's, EAN, afmetingen, fase) via SKU
+    # Stap 4: verrijk met products_raw (foto's, EAN, afmetingen, fase, naam) via SKU
     raw_by_sku: dict[str, dict] = {}
     if skus:
         try:
             res = sb.table("products_raw").select(
-                "sku,supplier,fase,ean_piece,designer,hoogte_cm,lengte_cm,breedte_cm,"
+                "sku,supplier,fase,product_name_raw,ean_piece,designer,"
+                "hoogte_cm,lengte_cm,breedte_cm,"
                 "leverancier_category,leverancier_item_cat,"
                 "photo_packshot_1,photo_packshot_2,photo_packshot_3,"
                 "photo_packshot_4,photo_packshot_5,"
