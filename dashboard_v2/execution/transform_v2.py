@@ -181,7 +181,10 @@ def apply_name_rules(product: dict, updates: dict, learnings: list[dict]) -> int
         sub_sub = rule.get("sub_subcategorie") or ""
         hc = rule.get("hoofdcategorie") or ""
         sc = rule.get("subcategorie") or ""
-        if not zoek or zoek not in naam:
+        if not zoek:
+            return
+        # WORD BOUNDARY matching — voorkomt dat 'tafels' ook 'bijzettafels' raakt
+        if not re.search(rf"\b{re.escape(zoek)}\b", naam):
             return
         if not (sub_sub or hc or sc):
             return

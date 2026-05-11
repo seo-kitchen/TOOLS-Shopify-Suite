@@ -523,7 +523,8 @@ def _apply_rule_locally(stap: int, rule_type: str, action: dict, data: list[dict
                 continue
             for r in data:
                 naam = (r.get("product_title_nl", "") or r.get("product_title", "") or "").lower()
-                if zoek in naam:
+                # WORD BOUNDARY zodat 'tafels' niet ook 'bijzettafels' raakt
+                if re.search(rf"\b{re.escape(zoek)}\b", naam):
                     if is_extra:
                         if sub:
                             if r.get("sub_subcategorie") and r.get("sub_subcategorie") != sub:
@@ -658,6 +659,241 @@ def _rule_samenvatting(L: dict) -> str:
     return (L.get("input_text") or "")[:80]
 
 
+def _normalize_parsed(parsed) -> list[dict]:
+    """Sonnet geeft soms dict, soms list, soms {'rules': [...]} terug — normaliseer."""
+    if isinstance(parsed, list):
+        return [p for p in parsed if isinstance(p, dict)]
+    if isinstance(parsed, dict):
+        if isinstance(parsed.get("rules"), list):
+            return [p for p in parsed["rules"] if isinstance(p, dict)]
+        if isinstance(parsed.get("operations"), list):
+            return [p for p in parsed["operations"] if isinstance(p, dict)]
+        return [parsed]
+    return []
+
+
+def _preview_match_count(stap: int, rt: str, act: dict, data: list[dict]) -> tuple[int, list[str]]:
+    """Tel hoeveel records geraakt worden + return enkele voorbeeld-namen."""
+    geraakt = []
+    if stap == 1 and rt == "title_strip":
+        woorden = [w.lower() for w in (act.get("strip") or []) if w]
+        for r in data:
+            n = (r.get("product_title_nl") or "").lower()
+            if any(w in n for w in woorden):
+                geraakt.append(r.get("product_title_nl", ""))
+    elif stap == 1 and rt == "title_replace":
+        paren = [(p.get("from", "").lower(), p.get("to", "")) for p in (act.get("replace") or [])]
+        for r in data:
+            n = (r.get("product_title_nl") or "").lower()
+            if any(fr in n for fr, _ in paren):
+                geraakt.append(r.get("product_title_nl", ""))
+    elif stap == 2 and rt in ("name_rule", "name_rule_bulk"):
+        regels = [act] if rt == "name_rule" else (act.get("regels") or [])
+        for r in data:
+            naam = (r.get("product_title_nl") or r.get("product_title") or "").lower()
+            for rl in regels:
+                zoek = (rl.get("zoekwoord") or "").strip().lower()
+                if zoek and re.search(rf"\b{re.escape(zoek)}\b", naam):
+                    geraakt.append(f"{r.get('sku','')} — {r.get('product_title_nl','')}")
+                    break
+    elif stap == 2 and rt == "category_override":
+        skus = set(act.get("skus") or [])
+        for r in data:
+            if r.get("sku") in skus:
+                geraakt.append(f"{r.get('sku','')} — {r.get('product_title_nl','')}")
+    elif stap == 2 and rt == "bulk_classify":
+        skip = bool(act.get("skip_if_set", False))
+        target = act.get("target_field", "")
+        for r in data:
+            if not skip or not (r.get(target) or "").strip():
+                geraakt.append(f"{r.get('sku','')} — {r.get('product_title_nl','')}")
+    elif stap == 2 and rt == "translation":
+        veld = (act.get("veld") or "").lower()
+        en = (act.get("en") or "").strip().lower()
+        key = "materiaal_nl" if veld == "materiaal" else "kleur_nl"
+        for r in data:
+            if (r.get(key) or "").strip().lower() == en:
+                geraakt.append(f"{r.get('sku','')} — {r.get(key,'')}")
+    elif stap == 3 and rt == "meta_replace":
+        paren = [(p.get("from", "").lower(), p.get("to", "")) for p in (act.get("replace") or [])]
+        for r in data:
+            n = (r.get("meta_description") or "").lower()
+            if any(fr in n for fr, _ in paren):
+                geraakt.append(f"{r.get('sku','')} — {(r.get('meta_description') or '')[:60]}")
+    return len(geraakt), geraakt[:10]
+
+
+def _render_preview(stap: int, data: list[dict], pending_key: str,
+                    pending_txt_key: str, flag_clear: str) -> None:
+    """Toon Sonnet's voorstel met edit-mogelijkheid + bevestig/annuleer."""
+    parsed = st.session_state.get(pending_key) or {}
+    txt = st.session_state.get(pending_txt_key, "")
+    regels = _normalize_parsed(parsed)
+
+    if not regels:
+        st.warning("Sonnet gaf niets bruikbaars terug.")
+        if st.button("← Terug", key=f"hvp_pv_back_{stap}"):
+            st.session_state.pop(pending_key, None)
+            st.session_state.pop(pending_txt_key, None)
+            st.session_state[flag_clear] = True
+            st.rerun()
+        return
+
+    st.markdown(f"**🔎 Sonnet stelt {len(regels)} regel(s) voor — controleer vóór toepassen:**")
+    st.caption(f"Op basis van: _{txt}_")
+
+    # Cache bewerkte regels per index
+    bewerkt: list[dict] = []
+    cats = _laad_cats() if stap == 2 else []
+
+    for i, rl in enumerate(regels):
+        rt = rl.get("rule_type", "?")
+        act = dict(rl.get("action") or {})
+        expl = rl.get("explanation", "")
+
+        with st.container(border=True):
+            st.markdown(f"**Regel {i+1}** · `{rt}`")
+            if expl:
+                st.caption(expl)
+
+            # Preview match-count + voorbeelden
+            n_hit, voorbeelden = _preview_match_count(stap, rt, act, data)
+            if rt in ("title_instruction", "meta_instruction"):
+                st.info("Geen lokale wijziging — alleen opgeslagen voor toekomstige runs.")
+            else:
+                st.markdown(f"**→ {n_hit} producten worden geraakt**")
+                if voorbeelden:
+                    with st.expander(f"Voorbeelden ({min(len(voorbeelden), 10)})", expanded=False):
+                        for v in voorbeelden:
+                            st.text(v)
+
+            # ── Edit-UI voor stap 2 name_rule (categorie kiezen / nieuw maken) ──
+            if stap == 2 and rt in ("name_rule", "name_rule_bulk"):
+                NEW = "+ Nieuwe…"
+                hoofd_keuzes = sorted(set(c["hoofdcategorie"] for c in cats if c.get("hoofdcategorie")))
+                if rt == "name_rule":
+                    subregels = [act]
+                else:
+                    subregels = act.get("regels") or []
+                nieuw_subregels = []
+                for j, sr in enumerate(subregels):
+                    st.markdown(f"_Sub-regel {j+1}_")
+                    zoek = st.text_input(
+                        "Zoekwoord", value=sr.get("zoekwoord", ""),
+                        key=f"hvp_pv_zoek_{stap}_{i}_{j}",
+                    )
+                    cA, cB, cC = st.columns(3)
+                    with cA:
+                        huidig_hc = sr.get("hoofdcategorie", "")
+                        opties_hc = hoofd_keuzes + [NEW]
+                        idx_hc = opties_hc.index(huidig_hc) if huidig_hc in opties_hc else len(opties_hc) - 1
+                        hc_sel = st.selectbox(
+                            "Hoofdcat",
+                            opties_hc + ([huidig_hc] if huidig_hc and huidig_hc not in opties_hc else []),
+                            index=(opties_hc.index(huidig_hc) if huidig_hc in opties_hc
+                                    else (len(opties_hc) if huidig_hc else idx_hc)),
+                            key=f"hvp_pv_hc_{stap}_{i}_{j}",
+                        )
+                        if hc_sel == NEW:
+                            hc = st.text_input("Nieuwe hoofd", value=huidig_hc if huidig_hc not in hoofd_keuzes else "",
+                                                 key=f"hvp_pv_hcnew_{stap}_{i}_{j}").strip()
+                        else:
+                            hc = hc_sel
+                    with cB:
+                        sub_keuzes = sorted(set(c["subcategorie"] for c in cats
+                                                  if c.get("hoofdcategorie") == hc and c.get("subcategorie")))
+                        huidig_sc = sr.get("subcategorie", "")
+                        if hc and hc not in hoofd_keuzes:
+                            sc = st.text_input("Nieuwe sub", value=huidig_sc,
+                                                key=f"hvp_pv_scnew_{stap}_{i}_{j}").strip()
+                        else:
+                            opties_sc = sub_keuzes + [NEW]
+                            if huidig_sc and huidig_sc not in opties_sc:
+                                opties_sc.append(huidig_sc)
+                            sc_sel = st.selectbox(
+                                "Subcat",
+                                opties_sc,
+                                index=opties_sc.index(huidig_sc) if huidig_sc in opties_sc else 0,
+                                key=f"hvp_pv_sc_{stap}_{i}_{j}",
+                            )
+                            if sc_sel == NEW:
+                                sc = st.text_input("Naam nieuwe sub", value="",
+                                                    key=f"hvp_pv_scinp_{stap}_{i}_{j}").strip()
+                            else:
+                                sc = sc_sel
+                    with cC:
+                        ssub_keuzes = sorted(set(c["sub_subcategorie"] for c in cats
+                                                   if c.get("hoofdcategorie") == hc
+                                                   and c.get("subcategorie") == sc
+                                                   and c.get("sub_subcategorie")))
+                        huidig_ss = sr.get("sub_subcategorie", "")
+                        nieuwe_hc_of_sc = (hc and hc not in hoofd_keuzes) or (sc and sc not in sub_keuzes)
+                        if nieuwe_hc_of_sc:
+                            ss = st.text_input("Nieuwe sub-sub", value=huidig_ss,
+                                                 key=f"hvp_pv_ssnew_{stap}_{i}_{j}").strip()
+                        else:
+                            opties_ss = ssub_keuzes + [NEW]
+                            if huidig_ss and huidig_ss not in opties_ss:
+                                opties_ss.append(huidig_ss)
+                            ss_sel = st.selectbox(
+                                "Sub-subcat",
+                                opties_ss,
+                                index=opties_ss.index(huidig_ss) if huidig_ss in opties_ss else 0,
+                                key=f"hvp_pv_ss_{stap}_{i}_{j}",
+                            )
+                            if ss_sel == NEW:
+                                ss = st.text_input("Naam nieuwe sub-sub", value="",
+                                                    key=f"hvp_pv_ssinp_{stap}_{i}_{j}").strip()
+                            else:
+                                ss = ss_sel
+
+                    nieuw_subregels.append({
+                        "zoekwoord": zoek,
+                        "hoofdcategorie": hc,
+                        "subcategorie": sc,
+                        "sub_subcategorie": ss,
+                        "is_extra": sr.get("is_extra", False),
+                    })
+
+                if rt == "name_rule":
+                    new_act = nieuw_subregels[0] if nieuw_subregels else act
+                else:
+                    new_act = {"regels": nieuw_subregels}
+                bewerkt.append({"rule_type": rt, "action": new_act,
+                                "explanation": expl, "scope": rl.get("scope", "alle")})
+            else:
+                # Andere rule_types: toon JSON, niet bewerkbaar
+                with st.expander("Action (JSON)", expanded=False):
+                    st.json(act)
+                bewerkt.append(rl)
+
+    # Bevestig / Annuleer
+    cA, cB = st.columns([1, 1])
+    with cA:
+        if st.button("✅ Bevestig + pas toe", type="primary", key=f"hvp_pv_ok_{stap}"):
+            total = 0
+            for rl in bewerkt:
+                rt = rl.get("rule_type")
+                act = rl.get("action") or {}
+                if rt == "unclear" or not rt:
+                    continue
+                raakt = _apply_rule_locally(stap, rt, act, data)
+                total += raakt
+                _save_rule(stap, rt, act, rl.get("scope", "alle"), txt, rl.get("explanation", ""), raakt)
+            st.session_state["hvp_data"] = data
+            st.session_state.pop(pending_key, None)
+            st.session_state.pop(pending_txt_key, None)
+            st.session_state[flag_clear] = True
+            st.success(f"✅ {len(bewerkt)} regel(s) toegepast · {total} records aangepast")
+            st.rerun()
+    with cB:
+        if st.button("❌ Annuleer", key=f"hvp_pv_cancel_{stap}"):
+            st.session_state.pop(pending_key, None)
+            st.session_state.pop(pending_txt_key, None)
+            st.session_state[flag_clear] = True
+            st.rerun()
+
+
 def _chat_box(stap: int, kolom_voorbeeld: str) -> None:
     """Render chat-input onderaan een stap.
 
@@ -730,49 +966,21 @@ def _chat_box(stap: int, kolom_voorbeeld: str) -> None:
                 st.session_state[flag_clear] = True
                 st.rerun()
 
+        pending_key = f"hvp_chat_pending_{stap}"
+        pending_txt_key = f"hvp_chat_pending_txt_{stap}"
+
+        # ── Preview-modus: toon eerst wat Sonnet heeft besloten ──
+        if st.session_state.get(pending_key):
+            _render_preview(stap, data, pending_key, pending_txt_key, flag_clear)
+            return
+
         if doe and txt.strip():
             with st.spinner("Sonnet parset feedback..."):
                 parsed = _interpret_chat(stap, txt.strip(), voorbeelden)
             if not parsed:
                 return
-
-            # Sonnet kan een dict (1 regel) of een list (meerdere regels) teruggeven
-            if isinstance(parsed, list):
-                regels = parsed
-            elif isinstance(parsed, dict) and "rules" in parsed and isinstance(parsed["rules"], list):
-                regels = parsed["rules"]
-            elif isinstance(parsed, dict) and "operations" in parsed and isinstance(parsed["operations"], list):
-                regels = parsed["operations"]
-            elif isinstance(parsed, dict):
-                regels = [parsed]
-            else:
-                st.warning("Onverwachte respons van Sonnet.")
-                return
-
-            total_raakt = 0
-            laatste_expl = ""
-            for parsed_rule in regels:
-                if not isinstance(parsed_rule, dict):
-                    continue
-                rt = parsed_rule.get("rule_type")
-                act = parsed_rule.get("action") or {}
-                expl = parsed_rule.get("explanation", "")
-                scope = parsed_rule.get("scope", "alle")
-                laatste_expl = expl or laatste_expl
-
-                if rt == "unclear" or not rt:
-                    st.warning(f"Onduidelijk: {expl or 'parse-fout'}")
-                    continue
-
-                raakt = _apply_rule_locally(stap, rt, act, data)
-                total_raakt += raakt
-                _save_rule(stap, rt, act, scope, txt.strip(), expl, raakt)
-
-            st.session_state["hvp_data"] = data
-            st.success(f"✅ {len(regels)} regel(s) toegepast · {total_raakt} records aangepast · opgeslagen in geheugen")
-            if laatste_expl:
-                st.caption(laatste_expl)
-            st.session_state[flag_clear] = True
+            st.session_state[pending_key] = parsed
+            st.session_state[pending_txt_key] = txt.strip()
             st.rerun()
 
 
