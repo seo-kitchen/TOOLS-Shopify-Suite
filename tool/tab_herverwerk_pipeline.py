@@ -43,6 +43,53 @@ def _get_sb():
     return create_client(url, key)
 
 
+# ── Pipeline-status bijhouden (in_process / ready) ───────────────────────────
+
+def _mark_in_process(skus: list[str], data: list[dict] | None = None) -> int:
+    """Zet pipeline_status='in_process' in products_curated.
+
+    Behoudt bestaande 'ready' status — alleen 'raw' of nieuwe records worden bijgewerkt.
+    Schrijft ook product_title_nl / handle / supplier als die er nog niet zijn,
+    zodat je in de dashboard ziet om welke producten het gaat.
+    """
+    if not skus:
+        return 0
+    try:
+        sb = _get_sb()
+        data_by_sku = {r.get("sku"): r for r in (data or []) if r.get("sku")}
+        # Bestaande records ophalen in batches
+        bestaand: dict[str, dict] = {}
+        for i in range(0, len(skus), 200):
+            chunk = skus[i:i + 200]
+            res = sb.table("products_curated").select("id,sku,pipeline_status") \
+                .in_("sku", chunk).execute().data or []
+            for r in res:
+                bestaand[r["sku"]] = r
+
+        count = 0
+        for sku in skus:
+            row = data_by_sku.get(sku, {})
+            if sku in bestaand:
+                if bestaand[sku].get("pipeline_status") == "ready":
+                    continue  # niet downgraden
+                sb.table("products_curated").update({
+                    "pipeline_status": "in_process",
+                }).eq("sku", sku).execute()
+            else:
+                payload = {
+                    "sku": sku,
+                    "pipeline_status": "in_process",
+                    "supplier": row.get("vendor") or row.get("supplier") or "",
+                    "product_title_nl": row.get("product_title_nl") or row.get("product_title") or "",
+                }
+                sb.table("products_curated").insert(payload).execute()
+            count += 1
+        return count
+    except Exception as e:
+        # Stil falen: we willen de pipeline niet blokkeren
+        return 0
+
+
 # ── Opslaan / hervatten van pipeline-state ────────────────────────────────────
 
 def _save_draft(naam: str) -> bool:
@@ -97,6 +144,10 @@ def _restore_draft(draft: dict) -> None:
             st.session_state.pop(k, None)
     # hv_pipeline_rows wordt verwacht door render() — vul met laatst opgeslagen data
     st.session_state["hv_pipeline_rows"] = payload.get("hvp_data", [])
+    # Markeer als in_process zodat status klopt
+    skus = [r.get("sku") for r in (payload.get("hvp_data") or []) if r.get("sku")]
+    if skus:
+        _mark_in_process(skus, payload.get("hvp_data"))
 
 
 def _delete_draft(draft_id: str) -> bool:
@@ -1358,13 +1409,22 @@ def render() -> None:
             st.switch_page("pages/08_Herverwerk.py")
         return
 
-    # Initialiseer data + stap
-    if "hvp_data" not in st.session_state:
+    # Initialiseer data + stap — markeer ook als in_process bij eerste laadbeurt
+    eerste_keer = "hvp_data" not in st.session_state
+    if eerste_keer:
         st.session_state["hvp_data"] = list(rows)
     if "hvp_stap" not in st.session_state:
         st.session_state["hvp_stap"] = 1
 
     n = len(st.session_state["hvp_data"])
+
+    if eerste_keer and rows:
+        skus = [r.get("sku") for r in rows if r.get("sku")]
+        if skus:
+            aantal = _mark_in_process(skus, rows)
+            if aantal:
+                st.caption(f"{aantal} producten gemarkeerd als 'in_process' in products_curated.")
+
     st.caption(f"{n} producten geladen — foto's, EAN en barcodes worden niet aangeraakt.")
 
     # Opslaan/hervat-balk altijd zichtbaar
