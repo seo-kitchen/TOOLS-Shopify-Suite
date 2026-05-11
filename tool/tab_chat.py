@@ -108,6 +108,41 @@ TOOLS = [
         },
     },
     {
+        "name": "lees_excel_rijen",
+        "description": (
+            "Lees rijen uit het laatst geüploade bestand (Excel/CSV/TXT). "
+            "Gebruik dit ALTIJD wanneer je meer rijen wilt zien dan de eerste 15 die in de "
+            "system-context staan, of wanneer de gebruiker iets vraagt dat over de hele "
+            "Excel gaat ('check alle 270 rijen', 'welke rijen hebben...', "
+            "'wat is de gemiddelde X', etc.). "
+            "Geeft rijen als list[dict] terug — exact zoals in het bestand staan."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "start": {
+                    "type": "integer",
+                    "description": "Startindex (0-based, inclusive). Default 0.",
+                },
+                "end": {
+                    "type": "integer",
+                    "description": (
+                        "Eindindex (exclusive). Default: hele bestand. "
+                        "Maximaal 500 rijen per call — paginate als nodig."
+                    ),
+                },
+                "kolommen": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optioneel: filter naar specifieke kolommen om tokens te besparen. "
+                        "Laat leeg om alle kolommen te krijgen."
+                    ),
+                },
+            },
+        },
+    },
+    {
         "name": "status_voor_skus",
         "description": (
             "Bekijk de complete status van een lijst SKU's in één keer. "
@@ -231,8 +266,17 @@ Je hebt toegang tot twee databases via tools.
 - Als een vraag onduidelijk is: zoek in beide databases en combineer de resultaten.
 
 ## Bestand-uploads
-Als de gebruiker een bestand bijvoegt, ontvang je een systeem-context met bestandsnaam, kolommen
-en gedetecteerde SKU's.
+Als de gebruiker een bestand bijvoegt, ontvang je een systeem-context met bestandsnaam, kolommen,
+gedetecteerde SKU's en de **eerste 15 rijen** als preview. De volledige inhoud (tot 5000 rijen)
+zit in geheugen en is opvraagbaar via `lees_excel_rijen(start, end, kolommen)`.
+
+Vuistregels:
+- Vraag de gebruiker NIET expliciet "wil je dat ik dit lees?" — als hij iets vraagt over het
+  bestand, gewoon `lees_excel_rijen` aanroepen.
+- Voor analyses over de **hele** Excel (gemiddelden, tellingen, "welke rijen hebben X")
+  ALTIJD `lees_excel_rijen` aanroepen, niet vertrouwen op alleen de preview.
+- Batch in stukken van max 500 rijen — paginate als het bestand groter is.
+- Filter kolommen via `kolommen=[...]` om tokens te besparen als je maar enkele velden nodig hebt.
 
 Stappenplan na een SKU-lijst:
 1. Vraag de gebruiker NIET wat hij wil — als hij niets zegt, roep `status_voor_skus` aan met de
@@ -314,15 +358,31 @@ _PIJPLIJN_PAGES = {
 }
 
 
+_MAX_RIJEN_OPSLAAN = 5000   # absoluut maximum dat we in session_state houden
+_PREVIEW_RIJEN     = 15     # rijen die we direct in context-bericht stoppen
+_VELD_LIMIET       = 200    # max chars per veld in opslag/preview (foto-URLs vermijden)
+
+
+def _knip_veld(v) -> str:
+    s = str(v) if v is not None else ""
+    if len(s) > _VELD_LIMIET:
+        return s[:_VELD_LIMIET] + "…"
+    return s
+
+
 def _parse_uploaded_file(uploaded) -> dict:
     """Lees een geüpload bestand en haal context eruit voor Claude.
 
-    Returns: {"naam": str, "type": str, "rijen": int, "kolommen": [str],
-              "skus": [str], "sample": [dict], "fout": str | None}
+    Returns: {"naam", "type", "rijen", "kolommen", "skus", "alle_rijen",
+              "preview", "fout"}.
+
+    `alle_rijen` bevat tot _MAX_RIJEN_OPSLAAN rijen als list[dict] (alle kolommen,
+    velden afgekapt op _VELD_LIMIET). `preview` is de eerste _PREVIEW_RIJEN
+    daarvan, bedoeld voor het systeem-context-bericht.
     """
     naam = getattr(uploaded, "name", "?")
     info: dict = {"naam": naam, "type": "?", "rijen": 0, "kolommen": [],
-                  "skus": [], "sample": [], "fout": None}
+                  "skus": [], "alle_rijen": [], "preview": [], "fout": None}
     try:
         raw = uploaded.read()
         uploaded.seek(0)  # zodat de gebruiker 'm later opnieuw kan lezen
@@ -349,10 +409,13 @@ def _parse_uploaded_file(uploaded) -> dict:
             except UnicodeDecodeError:
                 text = raw.decode("cp1252", errors="ignore")
             regels = [ln.strip() for ln in text.splitlines() if ln.strip()]
+            alle = [{"regel": r} for r in regels[:_MAX_RIJEN_OPSLAAN]]
             info.update({
-                "type": "txt", "rijen": len(regels),
-                "skus": regels[:1000],
-                "sample": [{"regel": r} for r in regels[:5]],
+                "type":       "txt",
+                "rijen":      len(regels),
+                "skus":       regels[:1000],
+                "alle_rijen": alle,
+                "preview":    alle[:_PREVIEW_RIJEN],
             })
             return info
         else:
@@ -368,37 +431,49 @@ def _parse_uploaded_file(uploaded) -> dict:
                            "artikelnummer", "Artikelnummer"):
             if kandidaat in df.columns:
                 info["skus"] = [str(s).strip() for s in df[kandidaat].tolist()
-                                 if str(s).strip()][:1000]
+                                 if str(s).strip()][:_MAX_RIJEN_OPSLAAN]
                 break
-        # Sample: eerste 5 rijen, alleen tekst-velden, ingekort
-        for _, row in df.head(5).iterrows():
-            info["sample"].append({
-                k: (str(v)[:80] if v else "") for k, v in row.items()
-            })
+
+        # Sla ALLE rijen op (gecapped) — Claude kan ze via tool ophalen
+        sub = df.head(_MAX_RIJEN_OPSLAAN)
+        info["alle_rijen"] = [
+            {k: _knip_veld(v) for k, v in row.items()}
+            for _, row in sub.iterrows()
+        ]
+        info["preview"] = info["alle_rijen"][:_PREVIEW_RIJEN]
     except Exception as e:
         info["fout"] = f"Parse-fout: {e}"
     return info
 
 
 def _bestand_context_voor_claude(parsed_files: list[dict]) -> str:
-    """Bouw een context-bericht over de geüploade bestanden voor Claude."""
+    """Bouw een context-bericht voor Claude. Bevat preview (eerste 15 rijen);
+    de volledige inhoud staat in session_state en is via `lees_excel_rijen` opvraagbaar.
+    """
     if not parsed_files:
         return ""
+    import json as _json
     delen = ["📎 **Bijgevoegde bestanden:**"]
     for f in parsed_files:
         if f.get("fout"):
             delen.append(f"\n- `{f['naam']}` — FOUT: {f['fout']}")
             continue
-        regel = f"\n- `{f['naam']}` ({f['type']}, {f['rijen']} rijen)"
+        regel = f"\n- `{f['naam']}` ({f['type']}, **{f['rijen']} rijen totaal**)"
         if f.get("kolommen"):
-            kols = ", ".join(f["kolommen"][:15])
+            kols = ", ".join(f["kolommen"][:25])
             regel += f"\n  Kolommen: {kols}"
         if f.get("skus"):
             sample_skus = ", ".join(f["skus"][:5])
             extra = f" … (+{len(f['skus']) - 5} meer)" if len(f["skus"]) > 5 else ""
             regel += f"\n  SKU's gedetecteerd ({len(f['skus'])}): {sample_skus}{extra}"
-        if f.get("sample"):
-            regel += f"\n  Eerste rij: {f['sample'][0]}"
+        if f.get("preview"):
+            n_prev = len(f["preview"])
+            n_tot = f["rijen"]
+            regel += f"\n  Eerste {n_prev} van {n_tot} rijen (volledig opvraagbaar via tool `lees_excel_rijen`):"
+            for i, rij in enumerate(f["preview"], start=1):
+                regel += f"\n    [{i}] {_json.dumps(rij, ensure_ascii=False)}"
+            if n_tot > n_prev:
+                regel += f"\n  … (+{n_tot - n_prev} meer rijen — gebruik `lees_excel_rijen` voor toegang)"
         delen.append(regel)
     return "\n".join(delen)
 
@@ -675,6 +750,34 @@ def _run_claude(messages: list[dict]) -> tuple[str, list[dict] | None]:
                     "type": "tool_result",
                     "tool_use_id": tc.id,
                     "content": f"Updates klaargezet voor bevestiging: {len(pending_updates)} items. Samenvatting: {sam}",
+                })
+
+            elif tc.name == "lees_excel_rijen":
+                try:
+                    excel = st.session_state.get("chat_geuploade_excel")
+                    if not excel or not excel.get("alle_rijen"):
+                        result_str = "Geen geüpload bestand in geheugen."
+                    else:
+                        alle = excel["alle_rijen"]
+                        start = max(0, int(tc.input.get("start", 0) or 0))
+                        end_in = tc.input.get("end")
+                        end = int(end_in) if end_in is not None else len(alle)
+                        end = min(end, len(alle), start + 500)
+                        kolommen = tc.input.get("kolommen") or []
+                        sub = alle[start:end]
+                        if kolommen:
+                            sub = [{k: r.get(k, "") for k in kolommen} for r in sub]
+                        result_str = (
+                            f"Bestand '{excel.get('naam', '?')}' — "
+                            f"{len(alle)} rijen totaal, retourneer {start}-{end-1}:\n"
+                            f"{sub}"
+                        )
+                except Exception as e:
+                    result_str = f"Fout: {e}"
+                tool_results_pending.append({
+                    "type": "tool_result",
+                    "tool_use_id": tc.id,
+                    "content": result_str,
                 })
 
             elif tc.name == "status_voor_skus":
@@ -956,13 +1059,25 @@ def render() -> None:
         if not user_msg:
             return
 
-        # Zet alle geüploade SKU's in session_state zodat Claude ze kan oppakken
+        # Zet alle geüploade SKU's + de volledige rijen-data in session_state
+        # zodat Claude ze later via tools kan oppakken.
         if parsed_files:
             alle_skus: list[str] = []
             for pf in parsed_files:
                 alle_skus.extend(pf.get("skus") or [])
             if alle_skus:
                 st.session_state["chat_geuploade_skus"] = alle_skus
+            # Het laatst geüploade bestand wordt opvraagbaar via lees_excel_rijen.
+            # Bij meerdere bestanden: het eerste met alle_rijen wint (meestal maar één).
+            for pf in parsed_files:
+                if pf.get("alle_rijen"):
+                    st.session_state["chat_geuploade_excel"] = {
+                        "naam":       pf["naam"],
+                        "type":       pf.get("type", "?"),
+                        "kolommen":   pf.get("kolommen", []),
+                        "alle_rijen": pf["alle_rijen"],
+                    }
+                    break
 
         st.session_state["chat_history"].append({"role": "user", "content": user_msg})
         with st.chat_message("user"):
@@ -997,4 +1112,7 @@ def render() -> None:
             st.session_state["chat_history"] = []
             st.session_state["chat_pending_updates"] = None
             st.session_state["chat_download_pending"] = None
+            st.session_state["chat_route_pending"] = None
+            st.session_state["chat_geuploade_skus"] = None
+            st.session_state["chat_geuploade_excel"] = None
             st.rerun()
