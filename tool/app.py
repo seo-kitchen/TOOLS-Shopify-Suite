@@ -316,8 +316,11 @@ except Exception:
 PAGES_DIR = _HERE / "pages"
 
 NAV = {
+    "Werkbank": [
+        st.Page(str(PAGES_DIR / "06_Chat.py"),       title="Werkbank (chat)",            default=True, url_path="chat"),
+    ],
     "Pipeline (volledig)": [
-        st.Page(str(PAGES_DIR / "10_Pipeline.py"),   title="Volledige pipeline",         default=True, url_path="pipeline"),
+        st.Page(str(PAGES_DIR / "10_Pipeline.py"),   title="Volledige pipeline",         url_path="pipeline"),
         st.Page(str(PAGES_DIR / "11_Learnings.py"),  title="Learnings (feedback)",        url_path="learnings"),
     ],
     "Snelle acties": [
@@ -333,7 +336,6 @@ NAV = {
         st.Page(str(PAGES_DIR / "05_Inzicht.py"),    title="Inzicht in producten",       url_path="inzicht"),
     ],
     "Overig": [
-        st.Page(str(PAGES_DIR / "06_Chat.py"),       title="Data-assistent",             url_path="chat"),
         st.Page(str(PAGES_DIR / "07_Notities.py"),   title="Notities",                   url_path="notities"),
     ],
 }
