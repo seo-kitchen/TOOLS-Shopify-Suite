@@ -956,26 +956,100 @@ def _stap_categorie_kleur() -> None:
                         st.text(n)
                     if len(namen_lijst) > 8:
                         st.caption(f"+ {len(namen_lijst) - 8} meer…")
+                NEW = "+ Nieuwe categorie…"
+
                 c1, c2, c3 = st.columns(3)
                 with c1:
-                    hc = st.selectbox("Hoofdcategorie", hoofdcats, key=f"hck2_{idx}")
+                    hc_sel = st.selectbox(
+                        "Hoofdcategorie",
+                        hoofdcats + [NEW],
+                        key=f"hck2_{idx}",
+                    )
+                    if hc_sel == NEW:
+                        hc = st.text_input(
+                            "Naam nieuwe hoofdcategorie",
+                            key=f"hck2new_{idx}",
+                            placeholder="bv. Tuin & Buiten",
+                        ).strip()
+                    else:
+                        hc = hc_sel
                 with c2:
-                    subcats = sorted(set(c["subcategorie"] for c in cats if c["hoofdcategorie"] == hc and c["subcategorie"]))
-                    sc = st.selectbox("Subcategorie", subcats or ["—"], key=f"sck2_{idx}")
+                    if hc and hc not in hoofdcats:
+                        # Nieuwe hoofdcat: dus sub ook nieuw
+                        sc = st.text_input(
+                            "Subcategorie (nieuw)",
+                            key=f"sck2new_{idx}",
+                            placeholder="bv. Bloempotten buiten",
+                        ).strip()
+                    else:
+                        subcats = sorted(set(c["subcategorie"] for c in cats if c["hoofdcategorie"] == hc and c["subcategorie"]))
+                        sc_sel = st.selectbox(
+                            "Subcategorie",
+                            (subcats or []) + [NEW],
+                            key=f"sck2_{idx}",
+                        )
+                        if sc_sel == NEW:
+                            sc = st.text_input(
+                                "Naam nieuwe subcategorie",
+                                key=f"sck2new_{idx}",
+                                placeholder="bv. Bloempotten buiten",
+                            ).strip()
+                        else:
+                            sc = sc_sel
                 with c3:
-                    subsubs = sorted(set(c["sub_subcategorie"] for c in cats if c["hoofdcategorie"] == hc and c["subcategorie"] == sc and c["sub_subcategorie"]))
-                    ssc = st.selectbox("Sub-subcategorie", subsubs or ["—"], key=f"ssck2_{idx}")
+                    if (hc and hc not in hoofdcats) or (sc and (hc not in hoofdcats or sc not in [c["subcategorie"] for c in cats if c["hoofdcategorie"] == hc])):
+                        ssc = st.text_input(
+                            "Sub-subcategorie (nieuw)",
+                            key=f"ssck2new_{idx}",
+                            placeholder="bv. Bloempotten buiten",
+                        ).strip()
+                    else:
+                        subsubs = sorted(set(c["sub_subcategorie"] for c in cats if c["hoofdcategorie"] == hc and c["subcategorie"] == sc and c["sub_subcategorie"]))
+                        ssc_sel = st.selectbox(
+                            "Sub-subcategorie",
+                            (subsubs or []) + [NEW],
+                            key=f"ssck2_{idx}",
+                        )
+                        if ssc_sel == NEW:
+                            ssc = st.text_input(
+                                "Naam nieuwe sub-subcategorie",
+                                key=f"ssck2new_{idx}",
+                                placeholder="bv. Bloempotten buiten",
+                            ).strip()
+                        else:
+                            ssc = ssc_sel
 
                 # Optionele tweede sub-subcategorie (bv. Bloempotten binnen + buiten)
                 alle_subsubs = sorted(set(c["sub_subcategorie"] for c in cats if c["sub_subcategorie"] and c["sub_subcategorie"] != ssc))
-                ssc2 = st.selectbox(
+                ssc2_sel = st.selectbox(
                     "+ Tweede sub-subcategorie (optioneel)",
-                    ["—"] + alle_subsubs,
+                    ["—"] + alle_subsubs + [NEW],
                     key=f"ssck2b_{idx}",
                     help="Bv. een product hoort bij zowel Bloempotten binnen als buiten",
                 )
+                if ssc2_sel == NEW:
+                    ssc2 = st.text_input(
+                        "Naam tweede sub-subcategorie",
+                        key=f"ssck2bnew_{idx}",
+                        placeholder="bv. Bloempotten op pootjes",
+                    ).strip()
+                else:
+                    ssc2 = ssc2_sel
 
-                if st.button(f"Koppel ({len(combo_rows)} producten)", key=f"koppel2_{idx}"):
+                # Validatie + koppel-knop
+                ongeldig = []
+                if not hc: ongeldig.append("hoofdcategorie")
+                if not sc or sc == "—": ongeldig.append("subcategorie")
+                if not ssc or ssc == "—": ongeldig.append("sub-subcategorie")
+
+                koppel_btn = st.button(
+                    f"Koppel ({len(combo_rows)} producten)",
+                    key=f"koppel2_{idx}",
+                    disabled=bool(ongeldig),
+                    help=("Vul nog in: " + ", ".join(ongeldig)) if ongeldig else None,
+                )
+
+                if koppel_btn:
                     for r in combo_rows:
                         r["hoofdcategorie"] = hc
                         r["subcategorie"] = sc
