@@ -236,11 +236,13 @@ Beschikbare rule_types:
   action: {"instruction": "Behoud nooit de collectie-naam in de titel"}""",
     2: """Stap: categorie + materiaal + kleur.
 Beschikbare rule_types:
-- name_rule — als productnaam zoekwoord bevat → sub_subcategorie
-  action: {"zoekwoord": "...", "sub_subcategorie": "...", "is_extra": false}
-  (is_extra=true betekent: voeg toe als tweede categorie i.p.v. overschrijven)
+- name_rule — als productnaam zoekwoord bevat → volledige categorie
+  action: {"zoekwoord": "...", "hoofdcategorie": "...", "subcategorie": "...", "sub_subcategorie": "...", "is_extra": false}
+  BELANGRIJK: VUL ALLE DRIE de niveaus in (hoofd + sub + sub_sub) zodat de regel ook
+  werkt voor producten ZONDER leverancier_category. Kies uit de bestaande categorie-boom.
+  (is_extra=true: voeg toe als tweede categorie i.p.v. overschrijven)
 - name_rule_bulk — meerdere regels tegelijk
-  action: {"regels": [{"zoekwoord": "...", "sub_subcategorie": "...", "is_extra": false}, ...]}
+  action: {"regels": [{"zoekwoord": "...", "hoofdcategorie": "...", "subcategorie": "...", "sub_subcategorie": "...", "is_extra": false}, ...]}
 - translation — en→nl voor materiaal of kleur
   action: {"veld": "materiaal" of "kleur", "en": "...", "nl": "..."}
 - category_override — voor specifieke SKU's één categorie zetten (eventueel met 2e subcat)
@@ -272,9 +274,37 @@ def _interpret_chat(stap: int, input_text: str, voorbeelden: list[str]) -> dict 
     import anthropic
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
 
+    # Bij stap 2: geef bestaande categorie-boom mee zodat Sonnet kan kiezen
+    extra_context = ""
+    if stap == 2:
+        try:
+            cats = _laad_cats()
+            tree: dict[str, dict[str, set[str]]] = {}
+            for c in cats:
+                h = c.get("hoofdcategorie") or ""
+                s = c.get("subcategorie") or ""
+                ss = c.get("sub_subcategorie") or ""
+                if not h:
+                    continue
+                tree.setdefault(h, {}).setdefault(s, set()).add(ss)
+            lines = []
+            for h in sorted(tree.keys()):
+                lines.append(f"• {h}")
+                for s in sorted(tree[h].keys()):
+                    sss = sorted(x for x in tree[h][s] if x)
+                    if s:
+                        lines.append(f"   └ {s}: {', '.join(sss) if sss else '(geen sub-sub)'}")
+            if lines:
+                extra_context = (
+                    "\n\nBESCHIKBARE CATEGORIEËN — kies hieruit voor name_rule "
+                    "(hoofd → sub → sub_sub):\n" + "\n".join(lines[:200])
+                )
+        except Exception:
+            pass
+
     system = f"""Je parset gebruikerfeedback naar JSON-regels voor de SEOkitchen pipeline.
 
-{_CHAT_PROMPTS[stap]}
+{_CHAT_PROMPTS[stap]}{extra_context}
 
 Output JSON:
 {{
@@ -481,23 +511,42 @@ def _apply_rule_locally(stap: int, rule_type: str, action: dict, data: list[dict
                     raakt += 1
 
     elif stap == 2 and rule_type in ("name_rule", "name_rule_bulk"):
+        from execution.transform_v2 import build_tags
         regels = [act] if rule_type == "name_rule" else (act.get("regels") or [])
         for rl in regels:
             zoek = (rl.get("zoekwoord") or "").strip().lower()
             sub = rl.get("sub_subcategorie") or ""
+            hc = rl.get("hoofdcategorie") or ""
+            sc = rl.get("subcategorie") or ""
             is_extra = bool(rl.get("is_extra"))
-            if not zoek or not sub:
+            if not zoek or not (sub or hc or sc):
                 continue
             for r in data:
                 naam = (r.get("product_title_nl", "") or r.get("product_title", "") or "").lower()
                 if zoek in naam:
                     if is_extra:
-                        if r.get("sub_subcategorie") and r.get("sub_subcategorie") != sub:
-                            r["sub_subcategorie_2"] = sub
-                        else:
-                            r["sub_subcategorie"] = sub
+                        if sub:
+                            if r.get("sub_subcategorie") and r.get("sub_subcategorie") != sub:
+                                r["sub_subcategorie_2"] = sub
+                            else:
+                                r["sub_subcategorie"] = sub
                     else:
-                        r["sub_subcategorie"] = sub
+                        if hc: r["hoofdcategorie"] = hc
+                        if sc:
+                            r["subcategorie"] = sc
+                            r["collectie"] = sc
+                        if sub: r["sub_subcategorie"] = sub
+                        if r.get("hoofdcategorie") and r.get("subcategorie") and r.get("sub_subcategorie"):
+                            r["_cat_gemapt"] = True
+                    # Herbouw tags
+                    extra_t = [r.get("sub_subcategorie_2")] if r.get("sub_subcategorie_2") else None
+                    r["tags"] = build_tags(
+                        r.get("hoofdcategorie", ""),
+                        r.get("subcategorie", ""),
+                        r.get("sub_subcategorie", ""),
+                        r.get("fase", ""),
+                        extra_tags=extra_t,
+                    )
                     raakt += 1
 
     elif stap == 2 and rule_type == "category_override":
@@ -885,11 +934,22 @@ def _stap_categorie_kleur() -> None:
                         r["_leverancier_category"] = raw_data.get("leverancier_category", "")
                         r["_leverancier_item_cat"] = raw_data.get("leverancier_item_cat", "")
 
-                    # Name-rule learnings
-                    updates = {"sub_subcategorie": r.get("sub_subcategorie", "")}
-                    apply_name_rules(raw_data, updates, cat_learnings)
-                    if updates.get("sub_subcategorie"):
-                        r["sub_subcategorie"] = updates["sub_subcategorie"]
+                    # Name-rule learnings — kunnen nu de volledige triple zetten
+                    updates = {
+                        "hoofdcategorie":   r.get("hoofdcategorie", ""),
+                        "subcategorie":     r.get("subcategorie", ""),
+                        "sub_subcategorie": r.get("sub_subcategorie", ""),
+                        "collectie":        r.get("collectie", ""),
+                    }
+                    # Geef ook product_title_nl mee zodat name_rule kan matchen op NL-naam
+                    raw_data["product_title_nl"] = r.get("product_title_nl", "")
+                    applied = apply_name_rules(raw_data, updates, cat_learnings)
+                    if applied > 0:
+                        for k in ("hoofdcategorie", "subcategorie", "sub_subcategorie", "collectie"):
+                            if updates.get(k):
+                                r[k] = updates[k]
+                        if updates.get("hoofdcategorie") and updates.get("subcategorie") and updates.get("sub_subcategorie"):
+                            r["_cat_gemapt"] = True
 
                     # Tags
                     r["tags"] = build_tags(

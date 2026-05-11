@@ -158,8 +158,19 @@ def load_active_learnings(sb, stap: str | None = None) -> list[dict]:
 
 
 def apply_name_rules(product: dict, updates: dict, learnings: list[dict]) -> int:
-    naam = (product.get("product_name_raw") or "").lower()
-    if not naam:
+    """Past name_rule learnings toe op een product.
+
+    name_rule kan nu de volledige categorie-triple bevatten:
+      {"zoekwoord": "pot feet", "hoofdcategorie": "Vazen & Potten",
+       "subcategorie": "Potten", "sub_subcategorie": "Potvoetjes", "is_extra": false}
+
+    Alleen sub_subcategorie meegeven blijft werken (achterwaarts compatibel).
+    """
+    naam_raw = (product.get("product_name_raw") or "")
+    naam_nl = (product.get("product_title_nl") or product.get("product_title") or "")
+    # match op zowel raw als NL-titel
+    naam = (naam_raw + " " + naam_nl).lower()
+    if not naam.strip():
         return 0
     applied = 0
     extra_tags = list(updates.get("_extra_tags") or [])
@@ -168,14 +179,24 @@ def apply_name_rules(product: dict, updates: dict, learnings: list[dict]) -> int
         nonlocal applied, extra_tags
         zoek = (rule.get("zoekwoord") or "").strip().lower()
         sub_sub = rule.get("sub_subcategorie") or ""
-        if not zoek or not sub_sub or zoek not in naam:
+        hc = rule.get("hoofdcategorie") or ""
+        sc = rule.get("subcategorie") or ""
+        if not zoek or zoek not in naam:
+            return
+        if not (sub_sub or hc or sc):
             return
         if rule.get("is_extra"):
-            if sub_sub not in extra_tags:
+            if sub_sub and sub_sub not in extra_tags:
                 extra_tags.append(sub_sub)
                 applied += 1
         else:
-            updates["sub_subcategorie"] = sub_sub
+            if hc:
+                updates["hoofdcategorie"] = hc
+            if sc:
+                updates["subcategorie"] = sc
+                updates["collectie"] = sc
+            if sub_sub:
+                updates["sub_subcategorie"] = sub_sub
             applied += 1
 
     for L in learnings:
