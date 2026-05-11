@@ -10,10 +10,13 @@ Foto's, EAN en barcodes worden nooit aangeraakt.
 from __future__ import annotations
 
 import io
+import json
 import os
+import re
 import sys
 import uuid
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 import openpyxl
@@ -58,6 +61,267 @@ def _voortgang(stap: int) -> None:
     st.divider()
 
 
+# ── Chat-correctie per stap ───────────────────────────────────────────────────
+
+_CHAT_PROMPTS = {
+    1: """Stap: titel-vertaling.
+Beschikbare rule_types:
+- title_strip — verwijder woorden/namen uit alle titels (bv. collectie-namen die per ongeluk in de Engelse titel staan)
+  action: {"strip": ["Ferd Ridge", "Horace Ridge"]}
+- title_replace — vervang X door Y in alle titels
+  action: {"replace": [{"from": "...", "to": "..."}]}
+- title_instruction — vrije regel voor toekomstige Haiku-vertalingen
+  action: {"instruction": "Behoud nooit de collectie-naam in de titel"}""",
+    2: """Stap: categorie + materiaal + kleur.
+Beschikbare rule_types:
+- name_rule — als productnaam zoekwoord bevat → sub_subcategorie
+  action: {"zoekwoord": "...", "sub_subcategorie": "...", "is_extra": false}
+  (is_extra=true betekent: voeg toe als tweede categorie i.p.v. overschrijven)
+- name_rule_bulk — meerdere regels tegelijk
+  action: {"regels": [{"zoekwoord": "...", "sub_subcategorie": "...", "is_extra": false}, ...]}
+- translation — en→nl voor materiaal of kleur
+  action: {"veld": "materiaal" of "kleur", "en": "...", "nl": "..."}
+- category_override — voor specifieke SKU's één categorie zetten (eventueel met 2e subcat)
+  action: {"skus": ["..."], "hoofdcategorie": "...", "subcategorie": "...", "sub_subcategorie": "...", "sub_subcategorie_2": "..."}""",
+    3: """Stap: meta description.
+Beschikbare rule_types:
+- meta_replace — vervang X door Y in alle meta descriptions
+  action: {"replace": [{"from": "...", "to": "..."}]}
+- meta_instruction — vrije regel voor toekomstige Sonnet meta-generatie
+  action: {"instruction": "Begin nooit met 'Ontdek'"}""",
+}
+
+_CHAT_STAP_NAAM = {1: "titel", 2: "categorie", 3: "meta"}
+
+
+def _interpret_chat(stap: int, input_text: str, voorbeelden: list[str]) -> dict | None:
+    """Vraag Sonnet om NL-feedback te parsen naar een gestructureerde regel."""
+    import anthropic
+    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
+
+    system = f"""Je parset gebruikerfeedback naar JSON-regels voor de SEOkitchen pipeline.
+
+{_CHAT_PROMPTS[stap]}
+
+Output JSON:
+{{
+  "rule_type": "...",
+  "action": {{...}},
+  "scope": "alle",
+  "explanation": "korte uitleg in 1 zin van wat je gaat doen"
+}}
+
+Geef ALLEEN valide JSON, geen markdown of uitleg eromheen."""
+
+    sample = "\n".join(f"- {v}" for v in voorbeelden[:10])
+    user = f"Huidige voorbeelden uit de batch:\n{sample}\n\nFeedback van gebruiker:\n{input_text}"
+
+    try:
+        resp = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=800,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+        )
+        text = resp.content[0].text.strip()
+        if text.startswith("```"):
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+        return json.loads(text.strip())
+    except Exception as e:
+        st.error(f"Parse-fout: {e}")
+        return None
+
+
+def _apply_rule_locally(stap: int, rule_type: str, action: dict, data: list[dict]) -> int:
+    """Pas regel direct toe op de in-view data. Return: aantal records geraakt."""
+    raakt = 0
+    act = action or {}
+
+    if stap == 1 and rule_type == "title_strip":
+        woorden = [w for w in (act.get("strip") or []) if w]
+        for r in data:
+            oud = r.get("product_title_nl", "") or ""
+            nieuw = oud
+            for w in woorden:
+                nieuw = re.sub(rf"\s*[-–—]?\s*{re.escape(w)}\s*[-–—]?\s*", " ", nieuw, flags=re.IGNORECASE)
+            nieuw = re.sub(r"\s{2,}", " ", nieuw).strip(" -–—")
+            if nieuw != oud:
+                r["product_title_nl"] = nieuw
+                raakt += 1
+
+    elif stap == 1 and rule_type == "title_replace":
+        paren = [(p.get("from", ""), p.get("to", "")) for p in (act.get("replace") or [])]
+        for r in data:
+            oud = r.get("product_title_nl", "") or ""
+            nieuw = oud
+            for fr, to in paren:
+                if fr:
+                    nieuw = re.sub(re.escape(fr), to, nieuw, flags=re.IGNORECASE)
+            if nieuw != oud:
+                r["product_title_nl"] = nieuw
+                raakt += 1
+
+    elif stap == 1 and rule_type == "title_instruction":
+        # alleen opslaan voor toekomstige Haiku-runs, geen lokale wijziging
+        pass
+
+    elif stap == 2 and rule_type == "translation":
+        veld = (act.get("veld") or "").lower()
+        en = (act.get("en") or "").strip().lower()
+        nl = (act.get("nl") or "").strip()
+        if veld == "materiaal":
+            for r in data:
+                if (r.get("materiaal_nl", "") or "").strip().lower() == en:
+                    r["materiaal_nl"] = nl
+                    raakt += 1
+        elif veld == "kleur":
+            for r in data:
+                if (r.get("kleur_nl", "") or "").strip().lower() == en:
+                    r["kleur_nl"] = nl
+                    raakt += 1
+
+    elif stap == 2 and rule_type in ("name_rule", "name_rule_bulk"):
+        regels = [act] if rule_type == "name_rule" else (act.get("regels") or [])
+        for rl in regels:
+            zoek = (rl.get("zoekwoord") or "").strip().lower()
+            sub = rl.get("sub_subcategorie") or ""
+            is_extra = bool(rl.get("is_extra"))
+            if not zoek or not sub:
+                continue
+            for r in data:
+                naam = (r.get("product_title_nl", "") or r.get("product_title", "") or "").lower()
+                if zoek in naam:
+                    if is_extra:
+                        if r.get("sub_subcategorie") and r.get("sub_subcategorie") != sub:
+                            r["sub_subcategorie_2"] = sub
+                        else:
+                            r["sub_subcategorie"] = sub
+                    else:
+                        r["sub_subcategorie"] = sub
+                    raakt += 1
+
+    elif stap == 2 and rule_type == "category_override":
+        skus = set((act.get("skus") or []))
+        for r in data:
+            if r.get("sku") in skus:
+                for k in ("hoofdcategorie", "subcategorie", "sub_subcategorie", "sub_subcategorie_2"):
+                    if act.get(k):
+                        r[k] = act[k]
+                r["collectie"] = act.get("subcategorie", r.get("collectie", ""))
+                r["_cat_gemapt"] = True
+                raakt += 1
+
+    elif stap == 3 and rule_type == "meta_replace":
+        paren = [(p.get("from", ""), p.get("to", "")) for p in (act.get("replace") or [])]
+        for r in data:
+            oud = r.get("meta_description", "") or ""
+            nieuw = oud
+            for fr, to in paren:
+                if fr:
+                    nieuw = re.sub(re.escape(fr), to, nieuw, flags=re.IGNORECASE)
+            if nieuw != oud:
+                r["meta_description"] = nieuw[:160]
+                raakt += 1
+
+    elif stap == 3 and rule_type == "meta_instruction":
+        pass  # alleen opslaan
+
+    return raakt
+
+
+def _save_rule(stap: int, rule_type: str, action: dict, scope: str, input_text: str,
+               explanation: str, raakt: int) -> bool:
+    """Sla regel direct op als 'applied' in seo_learnings."""
+    try:
+        _get_sb().table("seo_learnings").insert({
+            "stap": _CHAT_STAP_NAAM.get(stap, str(stap)),
+            "rule_type": rule_type,
+            "scope": scope or "alle",
+            "input_text": input_text,
+            "action": action or {},
+            "raw_response": json.dumps({"rule_type": rule_type, "action": action,
+                                        "explanation": explanation}),
+            "status": "applied",
+            "applied_at": datetime.utcnow().isoformat(),
+            "applied_by": "chef@seokitchen.nl",
+            "applied_rows": raakt,
+            "example_before": None,
+            "example_after": None,
+        }).execute()
+        return True
+    except Exception as e:
+        st.warning(f"Regel toegepast maar niet opgeslagen: {e}")
+        return False
+
+
+def _chat_box(stap: int, kolom_voorbeeld: str) -> None:
+    """Render chat-input onderaan een stap.
+
+    kolom_voorbeeld: welke key uit hvp_data tonen als sample (bv. 'product_title_nl').
+    """
+    data: list[dict] = st.session_state["hvp_data"]
+    voorbeelden = [r.get(kolom_voorbeeld, "") for r in data if r.get(kolom_voorbeeld)][:10]
+
+    with st.expander("💬 Correctie voor deze stap (wordt onthouden)", expanded=False):
+        st.caption(
+            "Typ in normaal Nederlands wat er mis gaat. De fix wordt nu toegepast én "
+            "opgeslagen zodat het in toekomstige runs ook automatisch gebeurt."
+        )
+        key_in = f"hvp_chat_in_{stap}"
+        key_btn = f"hvp_chat_btn_{stap}"
+        key_clr = f"hvp_chat_clr_{stap}"
+
+        txt = st.text_area(
+            "Feedback",
+            height=80,
+            key=key_in,
+            placeholder={
+                1: "bv. 'Verwijder Ferd Ridge en Horace Ridge uit alle titels — dat zijn collectie-namen'",
+                2: "bv. 'Producten met storage_pot in de naam zijn altijd Voorraadpotten'",
+                3: "bv. 'Begin nooit met Ontdek, gebruik liever de productnaam'",
+            }.get(stap, ""),
+        )
+        c1, c2 = st.columns([1, 5])
+        with c1:
+            doe = st.button("Pas toe + onthou", type="primary",
+                            disabled=not txt.strip(), key=key_btn)
+        with c2:
+            if st.button("Wis", key=key_clr):
+                st.session_state[key_in] = ""
+                st.rerun()
+
+        if doe and txt.strip():
+            with st.spinner("Sonnet parset feedback..."):
+                parsed = _interpret_chat(stap, txt.strip(), voorbeelden)
+            if not parsed:
+                return
+            rt = parsed.get("rule_type")
+            act = parsed.get("action") or {}
+            expl = parsed.get("explanation", "")
+            scope = parsed.get("scope", "alle")
+
+            if rt == "unclear" or not rt:
+                st.warning(f"Onduidelijk: {expl or 'parse-fout'}")
+                return
+
+            raakt = _apply_rule_locally(stap, rt, act, data)
+            st.session_state["hvp_data"] = data
+            opgeslagen = _save_rule(stap, rt, act, scope, txt.strip(), expl, raakt)
+
+            msg = f"✅ {rt} — {raakt} records aangepast"
+            if rt in ("title_instruction", "meta_instruction"):
+                msg = f"✅ Regel onthouden voor toekomstige runs ({rt})"
+            if opgeslagen:
+                msg += " · opgeslagen in geheugen"
+            st.success(msg)
+            if expl:
+                st.caption(expl)
+            st.session_state[key_in] = ""
+            st.rerun()
+
+
 # ── Stap 1: Namen ─────────────────────────────────────────────────────────────
 
 def _stap_namen() -> None:
@@ -72,11 +336,15 @@ def _stap_namen() -> None:
         st.caption(f"Geschatte kosten: ~€{kosten:.2f} (Haiku batch)")
         if st.button("Vertaal namen via Haiku", type="primary", key="hvp_s1_run"):
             try:
-                from execution.transform_v2 import vertaal_productnamen_batch, get_claude
+                from execution.transform_v2 import (
+                    vertaal_productnamen_batch, get_claude, load_active_learnings,
+                )
+                sb = _get_sb()
                 claude = get_claude()
+                title_lr = [L for L in load_active_learnings(sb) if L.get("stap") == "titel"]
                 namen = [r.get("product_title", "") or r.get("product_name_raw", "") for r in data]
-                with st.spinner("Haiku vertaalt..."):
-                    vertaling = vertaal_productnamen_batch(namen, claude)
+                with st.spinner(f"Haiku vertaalt ({len(title_lr)} actieve titel-regels)..."):
+                    vertaling = vertaal_productnamen_batch(namen, claude, title_learnings=title_lr)
                 for r in data:
                     raw = r.get("product_title", "") or r.get("product_name_raw", "") or ""
                     r["product_title_nl"] = vertaling.get(raw.strip(), raw)
@@ -124,6 +392,8 @@ def _stap_namen() -> None:
                         break
             st.session_state["hvp_stap"] = 2
             st.rerun()
+
+    _chat_box(stap=1, kolom_voorbeeld="product_title_nl")
 
 
 # ── Stap 2: Categorie, materiaal, kleur ──────────────────────────────────────
@@ -270,6 +540,16 @@ def _stap_categorie_kleur() -> None:
             st.caption("Koppel de juiste categorie. Die wordt ook opgeslagen in de mapping-tabel voor toekomstige batches.")
             for idx, ((lc, lic), combo_rows) in enumerate(combo_to_rows.items()):
                 st.markdown(f"**{lc}** / {lic or '(leeg)'}  —  {len(combo_rows)} producten")
+                # Toon de daadwerkelijke productnamen zodat je ziet waar het over gaat
+                namen_lijst = [
+                    f"{r.get('sku','')} — {r.get('product_title_nl','') or r.get('product_title','')}"
+                    for r in combo_rows
+                ]
+                with st.container(border=True):
+                    for n in namen_lijst[:8]:
+                        st.text(n)
+                    if len(namen_lijst) > 8:
+                        st.caption(f"+ {len(namen_lijst) - 8} meer…")
                 c1, c2, c3 = st.columns(3)
                 with c1:
                     hc = st.selectbox("Hoofdcategorie", hoofdcats, key=f"hck2_{idx}")
@@ -280,11 +560,22 @@ def _stap_categorie_kleur() -> None:
                     subsubs = sorted(set(c["sub_subcategorie"] for c in cats if c["hoofdcategorie"] == hc and c["subcategorie"] == sc and c["sub_subcategorie"]))
                     ssc = st.selectbox("Sub-subcategorie", subsubs or ["—"], key=f"ssck2_{idx}")
 
+                # Optionele tweede sub-subcategorie (bv. Bloempotten binnen + buiten)
+                alle_subsubs = sorted(set(c["sub_subcategorie"] for c in cats if c["sub_subcategorie"] and c["sub_subcategorie"] != ssc))
+                ssc2 = st.selectbox(
+                    "+ Tweede sub-subcategorie (optioneel)",
+                    ["—"] + alle_subsubs,
+                    key=f"ssck2b_{idx}",
+                    help="Bv. een product hoort bij zowel Bloempotten binnen als buiten",
+                )
+
                 if st.button(f"Koppel ({len(combo_rows)} producten)", key=f"koppel2_{idx}"):
                     for r in combo_rows:
                         r["hoofdcategorie"] = hc
                         r["subcategorie"] = sc
                         r["sub_subcategorie"] = ssc
+                        if ssc2 and ssc2 != "—":
+                            r["sub_subcategorie_2"] = ssc2
                         r["collectie"] = sc
                         r["_cat_gemapt"] = True
                     try:
@@ -313,6 +604,7 @@ def _stap_categorie_kleur() -> None:
         "hoofdcategorie":  r.get("hoofdcategorie", ""),
         "subcategorie":    r.get("subcategorie", ""),
         "sub_subcategorie": r.get("sub_subcategorie", ""),
+        "sub_subcategorie_2": r.get("sub_subcategorie_2", ""),
         "materiaal_nl":    r.get("materiaal_nl", ""),
         "kleur_nl":        r.get("kleur_nl", ""),
     } for r in data])
@@ -325,6 +617,8 @@ def _stap_categorie_kleur() -> None:
             "hoofdcategorie":   st.column_config.TextColumn("Hoofdcat ✏️",  disabled=False, width="medium"),
             "subcategorie":     st.column_config.TextColumn("Subcat ✏️",    disabled=False, width="medium"),
             "sub_subcategorie": st.column_config.TextColumn("Sub-subcat ✏️", disabled=False, width="medium"),
+            "sub_subcategorie_2": st.column_config.TextColumn("+ Tweede sub-subcat ✏️", disabled=False, width="medium",
+                                   help="Optioneel: tweede categorie (bv. Bloempotten binnen + buiten)"),
             "materiaal_nl":     st.column_config.TextColumn("Materiaal ✏️", disabled=False, width="small"),
             "kleur_nl":         st.column_config.TextColumn("Kleur ✏️",     disabled=False, width="small"),
         },
@@ -346,17 +640,30 @@ def _stap_categorie_kleur() -> None:
             st.rerun()
     with c3:
         if st.button("Goedkeuren → Stap 3", type="primary", key="hvp_s2_ok"):
+            from execution.transform_v2 import build_tags
             for _, row in edited.iterrows():
                 for r in st.session_state["hvp_data"]:
                     if r.get("sku") == row["sku"]:
                         r["hoofdcategorie"] = row["hoofdcategorie"]
                         r["subcategorie"] = row["subcategorie"]
                         r["sub_subcategorie"] = row["sub_subcategorie"]
+                        r["sub_subcategorie_2"] = (row.get("sub_subcategorie_2") or "").strip()
                         r["materiaal_nl"] = row["materiaal_nl"]
                         r["kleur_nl"] = row["kleur_nl"]
+                        # Herbouw tags zodat tweede subcat als tag wordt meegenomen
+                        extra = [r["sub_subcategorie_2"]] if r["sub_subcategorie_2"] else None
+                        r["tags"] = build_tags(
+                            r.get("hoofdcategorie", ""),
+                            r.get("subcategorie", ""),
+                            r.get("sub_subcategorie", ""),
+                            r.get("fase", ""),
+                            extra_tags=extra,
+                        )
                         break
             st.session_state["hvp_stap"] = 3
             st.rerun()
+
+    _chat_box(stap=2, kolom_voorbeeld="product_title_nl")
 
 
 # ── Stap 3: Meta descriptions ─────────────────────────────────────────────────
@@ -445,11 +752,11 @@ def _stap_meta() -> None:
     )
 
     # Live tekentellers
-    ok = int((df["tekens"] >= 120) & (df["tekens"] <= 155)).sum() if len(df) else 0
+    ok = int(((df["tekens"] >= 120) & (df["tekens"] <= 155)).sum()) if len(df) else 0
     m1, m2, m3 = st.columns(3)
     m1.metric("120-155 tekens ✅", ok)
-    m2.metric("Te kort (<120)", int((df["tekens"] < 120) & (df["tekens"] > 0)).sum())
-    m3.metric("Leeg", int(df["tekens"] == 0).sum())
+    m2.metric("Te kort (<120)", int(((df["tekens"] < 120) & (df["tekens"] > 0)).sum()) if len(df) else 0)
+    m3.metric("Leeg", int((df["tekens"] == 0).sum()) if len(df) else 0)
 
     c1, c2, c3 = st.columns([2, 2, 2])
     with c1:
@@ -470,6 +777,8 @@ def _stap_meta() -> None:
                         break
             st.session_state["hvp_stap"] = 4
             st.rerun()
+
+    _chat_box(stap=3, kolom_voorbeeld="meta_description")
 
 
 # ── Stap 4: Opslaan + Export ──────────────────────────────────────────────────

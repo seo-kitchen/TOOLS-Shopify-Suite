@@ -321,6 +321,7 @@ NAV = {
         st.Page(str(PAGES_DIR / "11_Learnings.py"),  title="Learnings (feedback)",        url_path="learnings"),
     ],
     "Snelle acties": [
+        st.Page(str(PAGES_DIR / "12_Quick_Update.py"), title="Quick Update (upload + fix)", url_path="quick-update"),
         st.Page(str(PAGES_DIR / "01_Nieuwe.py"),     title="Nieuwe producten (legacy)",  url_path="nieuwe"),
         st.Page(str(PAGES_DIR / "02_Prijzen.py"),    title="Prijzen bijwerken",          url_path="prijzen"),
         st.Page(str(PAGES_DIR / "03_Collectie.py"),  title="Collectie SEO-teksten",      url_path="collectie"),

@@ -207,6 +207,49 @@ def apply_translation_learnings(learnings: list[dict]) -> tuple[dict, dict]:
             extra_mat[en] = nl
         elif veld == "kleur":
             extra_kl[en] = nl
+
+
+def apply_title_learnings(naam: str, learnings: list[dict]) -> str:
+    """Past title_strip + title_replace learnings toe op één naam.
+
+    title_strip:    {"strip": ["Ferd Ridge", "Horace Ridge"]}
+    title_replace:  {"replace": [{"from": "...", "to": "..."}]}
+    title_instruction wordt apart in de Haiku-prompt geïnjecteerd via collect_title_instructions().
+    """
+    if not naam:
+        return naam
+    out = naam
+    for L in learnings:
+        if L.get("stap") != "titel":
+            continue
+        rt = L.get("rule_type")
+        act = L.get("action") or {}
+        if rt == "title_strip":
+            for w in (act.get("strip") or []):
+                if not w:
+                    continue
+                # case-insensitive verwijderen + opruimen van dubbele spaties/streepjes
+                out = re.sub(rf"\s*[-–—]?\s*{re.escape(w)}\s*[-–—]?\s*", " ", out, flags=re.IGNORECASE)
+        elif rt == "title_replace":
+            for r in (act.get("replace") or []):
+                fr, to = (r.get("from") or "").strip(), (r.get("to") or "").strip()
+                if fr:
+                    out = re.sub(re.escape(fr), to, out, flags=re.IGNORECASE)
+    # opruimen
+    out = re.sub(r"\s{2,}", " ", out).strip(" -–—")
+    return out
+
+
+def collect_title_instructions(learnings: list[dict]) -> list[str]:
+    """Verzamelt title_instruction regels (vrije tekst voor Haiku-prompt)."""
+    out: list[str] = []
+    for L in learnings:
+        if L.get("stap") != "titel" or L.get("rule_type") != "title_instruction":
+            continue
+        inst = (L.get("action") or {}).get("instruction", "").strip()
+        if inst:
+            out.append(inst)
+    return out
     return extra_mat, extra_kl
 
 
@@ -462,7 +505,11 @@ def validate_against_website(sb, field_type: str, waarde: str) -> bool:
 
 # ── Naam-vertaling (batch via Haiku) ──────────────────────────────────────────
 
-def vertaal_productnamen_batch(namen: list[str], claude=None) -> dict[str, str]:
+def vertaal_productnamen_batch(
+    namen: list[str],
+    claude=None,
+    title_learnings: list[dict] | None = None,
+) -> dict[str, str]:
     if not namen:
         return {}
     if claude is None:
@@ -470,6 +517,12 @@ def vertaal_productnamen_batch(namen: list[str], claude=None) -> dict[str, str]:
     uniek = list(dict.fromkeys(n.strip() for n in namen if n and n.strip()))
     if not uniek:
         return {}
+
+    extra_regels = ""
+    if title_learnings:
+        instructies = collect_title_instructions(title_learnings)
+        if instructies:
+            extra_regels = "\nEXTRA REGELS (uit eerdere feedback):\n- " + "\n- ".join(instructies)
 
     prompt = (
         f"Vertaal deze {len(uniek)} Engelse productnamen naar het Nederlands voor "
@@ -484,7 +537,8 @@ def vertaal_productnamen_batch(namen: list[str], claude=None) -> dict[str, str]:
         "- Kleuren: White→Wit, Black→Zwart, Beige→Beige, Blue→Blauw, "
         "Green→Groen, Red→Rood, Yellow→Geel, Grey→Grijs, Brown→Bruin, Pink→Roze\n"
         "- Schuine streep tussen kleuren (Beige Blue → Beige/Blauw)\n"
-        "- Output: één regel per naam, dezelfde volgorde, geen nummering\n\n"
+        "- Output: één regel per naam, dezelfde volgorde, geen nummering"
+        f"{extra_regels}\n\n"
         "INPUT:\n" + "\n".join(uniek) + "\n\nOUTPUT:"
     )
     estimated = max(4000, len(uniek) * 16)
@@ -498,7 +552,11 @@ def vertaal_productnamen_batch(namen: list[str], claude=None) -> dict[str, str]:
     if len(lines) != len(uniek):
         # mismatch: val terug op identity-mapping voor onbekende namen
         return {}
-    return {k: _fix_set_namen(v) for k, v in zip(uniek, lines)}
+    result = {k: _fix_set_namen(v) for k, v in zip(uniek, lines)}
+    # Pas strip/replace learnings post-hoc toe (dubbele garantie)
+    if title_learnings:
+        result = {k: apply_title_learnings(v, title_learnings) for k, v in result.items()}
+    return result
 
 
 # ── Hoofdfunctie: transform_batch ─────────────────────────────────────────────
