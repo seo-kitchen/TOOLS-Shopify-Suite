@@ -1017,6 +1017,75 @@ def _stap_namen() -> None:
                 st.error(f"Fout: {e}")
         return
 
+    # ── Snelle vervanging: letterlijk X → Y in alle titels, geen AI ──
+    with st.expander("🎯 Snelle vervanging: X → Y in alle NL-titels (geen AI)", expanded=False):
+        st.caption(
+            "Letterlijke tekst-vervanging in alle NL-titels. "
+            "Wat je links typt wordt 1-op-1 vervangen door wat rechts staat. Hoofdletter-ongevoelig."
+        )
+        cV1, cV2 = st.columns(2)
+        with cV1:
+            qr_from = st.text_input("Van", key="hvp_qrv_from",
+                                     placeholder="bv. Plastic Pot inserts")
+        with cV2:
+            qr_to = st.text_input("Naar", key="hvp_qrv_to",
+                                   placeholder="bv. Plastic inzetpot")
+
+        # Preview matches
+        from_l = (qr_from or "").strip()
+        to_v = (qr_to or "").strip()
+        n_hit = 0
+        voorbeelden = []
+        if from_l:
+            patroon = re.compile(re.escape(from_l), re.IGNORECASE)
+            for r in data:
+                naam = r.get("product_title_nl", "") or ""
+                if patroon.search(naam):
+                    n_hit += 1
+                    if len(voorbeelden) < 5:
+                        voorbeelden.append((naam, patroon.sub(to_v, naam)))
+            st.info(f"📊 {n_hit} titels worden aangepast")
+            if voorbeelden:
+                with st.expander("Voorbeeld vóór → na", expanded=True):
+                    for v_oud, v_nw in voorbeelden:
+                        st.text(f"OUD:  {v_oud}")
+                        st.text(f"NIEUW: {v_nw}")
+                        st.divider()
+
+        onthouden = st.checkbox("Onthouden voor toekomstige batches", value=True, key="hvp_qrv_mem")
+
+        if st.button(
+            f"✅ Pas toe op {n_hit} titels",
+            type="primary",
+            disabled=not (from_l and n_hit > 0),
+            key="hvp_qrv_apply",
+        ):
+            patroon = re.compile(re.escape(from_l), re.IGNORECASE)
+            for r in data:
+                naam = r.get("product_title_nl", "") or ""
+                if patroon.search(naam):
+                    r["product_title_nl"] = patroon.sub(to_v, naam)
+            st.session_state["hvp_data"] = data
+            if onthouden:
+                try:
+                    _get_sb().table("seo_learnings").insert({
+                        "stap": "titel",
+                        "rule_type": "title_replace",
+                        "scope": "alle",
+                        "input_text": f"snelle vervanging: {from_l} → {to_v}",
+                        "action": {"replace": [{"from": from_l, "to": to_v}]},
+                        "status": "applied",
+                        "applied_at": datetime.utcnow().isoformat(),
+                        "applied_by": "chef@seokitchen.nl",
+                        "applied_rows": n_hit,
+                    }).execute()
+                except Exception as e:
+                    st.warning(f"Toegepast maar niet opgeslagen: {e}")
+            msg = f"✅ {n_hit} titels aangepast"
+            msg += " · onthouden" if onthouden else " · niet onthouden"
+            st.success(msg)
+            st.rerun()
+
     # Tabel om namen te bewerken
     df = pd.DataFrame([{
         "sku":           r.get("sku", ""),
@@ -1649,6 +1718,60 @@ def _stap_meta() -> None:
             except Exception as e:
                 st.error(f"Fout: {e}")
         return
+
+    # ── Snelle vervanging in meta descriptions ──
+    with st.expander("🎯 Snelle vervanging: X → Y in alle meta descriptions (geen AI)", expanded=False):
+        st.caption("Letterlijke tekst-vervanging in alle meta descriptions. Hoofdletter-ongevoelig.")
+        cV1, cV2 = st.columns(2)
+        with cV1:
+            mv_from = st.text_input("Van", key="hvp_mv_from",
+                                     placeholder="bv. Ontdek de")
+        with cV2:
+            mv_to = st.text_input("Naar", key="hvp_mv_to",
+                                   placeholder="bv. Bekijk de")
+        from_l = (mv_from or "").strip()
+        to_v = (mv_to or "").strip()
+        n_hit = 0
+        voorbeelden = []
+        if from_l:
+            patroon = re.compile(re.escape(from_l), re.IGNORECASE)
+            for r in data:
+                m = r.get("meta_description", "") or ""
+                if patroon.search(m):
+                    n_hit += 1
+                    if len(voorbeelden) < 3:
+                        voorbeelden.append((m, patroon.sub(to_v, m)))
+            st.info(f"📊 {n_hit} meta descriptions worden aangepast")
+            for v_oud, v_nw in voorbeelden:
+                st.text(f"OUD:  {v_oud[:120]}")
+                st.text(f"NIEUW: {v_nw[:120]}")
+                st.divider()
+        mv_mem = st.checkbox("Onthouden voor toekomstige batches", value=True, key="hvp_mv_mem")
+        if st.button(f"✅ Pas toe op {n_hit} meta's", type="primary",
+                      disabled=not (from_l and n_hit > 0), key="hvp_mv_apply"):
+            patroon = re.compile(re.escape(from_l), re.IGNORECASE)
+            for r in data:
+                m = r.get("meta_description", "") or ""
+                if patroon.search(m):
+                    r["meta_description"] = patroon.sub(to_v, m)[:160]
+            st.session_state["hvp_data"] = data
+            if mv_mem:
+                try:
+                    _get_sb().table("seo_learnings").insert({
+                        "stap": "meta",
+                        "rule_type": "meta_replace",
+                        "scope": "alle",
+                        "input_text": f"snelle vervanging: {from_l} → {to_v}",
+                        "action": {"replace": [{"from": from_l, "to": to_v}]},
+                        "status": "applied",
+                        "applied_at": datetime.utcnow().isoformat(),
+                        "applied_by": "chef@seokitchen.nl",
+                        "applied_rows": n_hit,
+                    }).execute()
+                except Exception as e:
+                    st.warning(f"Toegepast maar niet opgeslagen: {e}")
+            st.success(f"✅ {n_hit} meta's aangepast" + (" · onthouden" if mv_mem else " · niet onthouden"))
+            st.rerun()
 
     # Bewerkbare tabel met tekenteller
     df = pd.DataFrame([{
