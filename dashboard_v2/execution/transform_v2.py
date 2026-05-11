@@ -207,6 +207,7 @@ def apply_translation_learnings(learnings: list[dict]) -> tuple[dict, dict]:
             extra_mat[en] = nl
         elif veld == "kleur":
             extra_kl[en] = nl
+    return extra_mat, extra_kl
 
 
 def apply_title_learnings(naam: str, learnings: list[dict]) -> str:

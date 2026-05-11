@@ -43,6 +43,117 @@ def _get_sb():
     return create_client(url, key)
 
 
+# ── Opslaan / hervatten van pipeline-state ────────────────────────────────────
+
+def _save_draft(naam: str) -> bool:
+    """Sla huidige pipeline-state op als draft in seo_learnings."""
+    try:
+        payload = {
+            "hvp_data": st.session_state.get("hvp_data", []),
+            "hvp_stap": st.session_state.get("hvp_stap", 1),
+            "hvp_s1_gerund": st.session_state.get("hvp_s1_gerund", False),
+            "hvp_s2_gerund": st.session_state.get("hvp_s2_gerund", False),
+            "hvp_s3_gerund": st.session_state.get("hvp_s3_gerund", False),
+            "saved_at": datetime.utcnow().isoformat(),
+            "n_producten": len(st.session_state.get("hvp_data", [])),
+        }
+        _get_sb().table("seo_learnings").insert({
+            "stap": "pipeline",
+            "rule_type": "pipeline_draft",
+            "scope": naam[:80],
+            "input_text": naam[:200],
+            "action": payload,
+            "raw_response": "",
+            "status": "draft",
+            "applied_at": datetime.utcnow().isoformat(),
+            "applied_by": "chef@seokitchen.nl",
+        }).execute()
+        return True
+    except Exception as e:
+        st.error(f"Opslaan mislukt: {e}")
+        return False
+
+
+def _list_drafts() -> list[dict]:
+    """Haal lijst drafts op (nieuwste eerst, max 20)."""
+    try:
+        rows = _get_sb().table("seo_learnings").select("*") \
+            .eq("rule_type", "pipeline_draft").eq("status", "draft") \
+            .order("applied_at", desc=True).limit(20).execute().data or []
+        return rows
+    except Exception:
+        return []
+
+
+def _restore_draft(draft: dict) -> None:
+    """Zet draft terug in session_state."""
+    payload = draft.get("action") or {}
+    st.session_state["hvp_data"] = payload.get("hvp_data", [])
+    st.session_state["hvp_stap"] = payload.get("hvp_stap", 1)
+    for k in ("hvp_s1_gerund", "hvp_s2_gerund", "hvp_s3_gerund"):
+        if payload.get(k):
+            st.session_state[k] = True
+        else:
+            st.session_state.pop(k, None)
+    # hv_pipeline_rows wordt verwacht door render() — vul met laatst opgeslagen data
+    st.session_state["hv_pipeline_rows"] = payload.get("hvp_data", [])
+
+
+def _delete_draft(draft_id: str) -> bool:
+    try:
+        _get_sb().table("seo_learnings").delete().eq("id", draft_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+def _draft_balk() -> None:
+    """Render opslaan/hervat-balk bovenin."""
+    n = len(st.session_state.get("hvp_data", []))
+    with st.container(border=True):
+        c1, c2, c3 = st.columns([3, 2, 2])
+        with c1:
+            if st.session_state.pop("hvp_drnaam_clear", False):
+                st.session_state["hvp_drnaam"] = ""
+            naam = st.text_input(
+                "Naam voor deze sessie",
+                key="hvp_drnaam",
+                placeholder=f"bv. Pottery Pots batch {datetime.now().strftime('%d-%m %H:%M')}",
+                label_visibility="collapsed",
+            )
+        with c2:
+            if st.button(f"💾 Opslaan voortgang ({n})",
+                          disabled=(n == 0),
+                          key="hvp_drsave"):
+                naam_eff = naam.strip() or f"Sessie {datetime.now().strftime('%d-%m %H:%M')}"
+                if _save_draft(naam_eff):
+                    st.success(f"✅ Opgeslagen: {naam_eff}")
+                    st.session_state["hvp_drnaam_clear"] = True
+        with c3:
+            drafts = _list_drafts()
+            if drafts:
+                opties = ["—"] + [
+                    f"{(d.get('input_text') or 'naamloos')[:40]} "
+                    f"({(d.get('action') or {}).get('n_producten', 0)} prod, "
+                    f"stap {(d.get('action') or {}).get('hvp_stap', '?')})"
+                    for d in drafts
+                ]
+                keuze = st.selectbox("Hervat draft", opties, key="hvp_drchoose",
+                                       label_visibility="collapsed")
+                if keuze != "—":
+                    idx = opties.index(keuze) - 1
+                    bc1, bc2 = st.columns(2)
+                    with bc1:
+                        if st.button("📂 Laad", key="hvp_drload"):
+                            _restore_draft(drafts[idx])
+                            st.success(f"✅ Geladen: {keuze}")
+                            st.rerun()
+                    with bc2:
+                        if st.button("🗑 Verwijder", key="hvp_drdel"):
+                            if _delete_draft(drafts[idx]["id"]):
+                                st.rerun()
+
+
 # ── Voortgangsbalk ────────────────────────────────────────────────────────────
 
 def _voortgang(stap: int) -> None:
@@ -413,6 +524,7 @@ def _stap_namen() -> None:
                         r["product_title_nl"] = row["naam_nl"]
                         break
             st.session_state["hvp_stap"] = 2
+            _save_draft(f"Auto na stap 1 — {datetime.now().strftime('%d-%m %H:%M')}")
             st.rerun()
 
     _chat_box(stap=1, kolom_voorbeeld="product_title_nl")
@@ -683,6 +795,7 @@ def _stap_categorie_kleur() -> None:
                         )
                         break
             st.session_state["hvp_stap"] = 3
+            _save_draft(f"Auto na stap 2 — {datetime.now().strftime('%d-%m %H:%M')}")
             st.rerun()
 
     _chat_box(stap=2, kolom_voorbeeld="product_title_nl")
@@ -826,6 +939,7 @@ def _stap_meta() -> None:
                         r["meta_description"] = row["meta_description"]
                         break
             st.session_state["hvp_stap"] = 4
+            _save_draft(f"Auto na stap 3 — {datetime.now().strftime('%d-%m %H:%M')}")
             st.rerun()
 
     _chat_box(stap=3, kolom_voorbeeld="meta_description")
@@ -1014,9 +1128,12 @@ def render() -> None:
     st.subheader("Herverwerk — stap-voor-stap pipeline")
 
     rows: list[dict] = st.session_state.get("hv_pipeline_rows", [])
-    if not rows:
-        st.warning("Geen producten geladen. Ga terug naar **Archief herverwerken**.")
-        if st.button("Terug"):
+
+    # Als er geen rows zijn: bied hervat-balk aan, anders terug
+    if not rows and "hvp_data" not in st.session_state:
+        st.warning("Geen producten geladen. Ga terug naar **Archief herverwerken** of hervat een opgeslagen sessie hieronder.")
+        _draft_balk()
+        if st.button("← Terug naar Archief herverwerken"):
             st.switch_page("pages/08_Herverwerk.py")
         return
 
@@ -1028,6 +1145,9 @@ def render() -> None:
 
     n = len(st.session_state["hvp_data"])
     st.caption(f"{n} producten geladen — foto's, EAN en barcodes worden niet aangeraakt.")
+
+    # Opslaan/hervat-balk altijd zichtbaar
+    _draft_balk()
 
     _voortgang(st.session_state["hvp_stap"])
 
