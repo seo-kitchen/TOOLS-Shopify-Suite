@@ -435,7 +435,7 @@ def _load_by_skus(skus: list[str]) -> list[dict]:
         return []
     sb = _get_sb()
 
-    # products_raw — basis + foto's
+    # products_raw — basis + foto's + afmetingen
     raw_map: dict[str, dict] = {}
     for i in range(0, len(skus), 200):
         chunk = skus[i:i + 200]
@@ -461,15 +461,33 @@ def _load_by_skus(skus: list[str]) -> list[dict]:
         for r in res:
             cur_map[r["sku"]] = r
 
+    # shopify_meta_audit — huidige live meta title/description op Shopify (via handle)
+    handles = [r["handle"] for r in cur_map.values() if r.get("handle")]
+    audit_by_handle: dict[str, dict] = {}
+    if handles:
+        for i in range(0, len(handles), 200):
+            chunk = handles[i:i + 200]
+            try:
+                res = sb.table("shopify_meta_audit").select(
+                    "handle,current_meta_title,current_meta_description"
+                ).in_("handle", chunk).execute().data or []
+                for r in res:
+                    audit_by_handle[r["handle"]] = r
+            except Exception:
+                pass
+
     merged = []
     for sku in skus:
         raw = raw_map.get(sku, {})
         cur = cur_map.get(sku, {})
         if not raw and not cur:
             continue
+        handle = cur.get("handle", "")
+        audit = audit_by_handle.get(handle, {}) if handle else {}
         merged.append({
             **raw,
             **cur,
+            **audit,
             "sku": sku,
             "product_title": raw.get("product_name_raw", "") or cur.get("product_title_nl", ""),
             "vendor": (raw.get("supplier", "") or "").title(),
@@ -564,8 +582,32 @@ def render() -> None:
     m3.metric("Met meta-desc", int(df["current_meta_description"].notna().sum()) if "current_meta_description" in df else 0)
     m4.metric("Met foto", int(df["has_image"].sum()) if "has_image" in df else 0)
 
+    # Bouw afmetingen-string per rij en heeft_meta/heeft_titel-indicators
+    def _afm(r):
+        h = r.get("hoogte_cm")
+        l = r.get("lengte_cm")
+        b = r.get("breedte_cm")
+        delen = []
+        if h not in (None, "", 0): delen.append(f"H{h}")
+        if l not in (None, "", 0): delen.append(f"L{l}")
+        if b not in (None, "", 0): delen.append(f"B{b}")
+        return " · ".join(str(d) for d in delen) if delen else ""
+
+    df["afmetingen"] = df.apply(lambda r: _afm(r), axis=1)
+    # heeft_X: ✅ als gevuld, anders leeg
+    for src, tgt in [
+        ("current_meta_title", "heeft_title"),
+        ("current_meta_description", "heeft_desc"),
+        ("meta_description", "heeft_nl_desc"),
+    ]:
+        if src in df.columns:
+            df[tgt] = df[src].apply(lambda v: "✅" if str(v or "").strip() else "—")
+        else:
+            df[tgt] = "—"
+
     TOON = ["handle", "product_title", "vendor", "product_status",
-            "pipeline_status", "hoofdcategorie", "price"]
+            "pipeline_status", "hoofdcategorie",
+            "heeft_title", "heeft_desc", "afmetingen", "price"]
     for col in TOON:
         if col not in df.columns:
             df[col] = None
@@ -597,10 +639,16 @@ def render() -> None:
             "product_status":  st.column_config.TextColumn("Shopify", disabled=True, width="small"),
             "pipeline_status": st.column_config.TextColumn("Pipeline", disabled=True, width="small"),
             "hoofdcategorie":  st.column_config.TextColumn("Categorie", disabled=True, width="medium"),
+            "heeft_title":     st.column_config.TextColumn("Meta title", disabled=True, width="small",
+                                  help="✅ = Shopify heeft al een meta title"),
+            "heeft_desc":      st.column_config.TextColumn("Meta desc", disabled=True, width="small",
+                                  help="✅ = Shopify heeft al een meta description"),
+            "afmetingen":      st.column_config.TextColumn("Afmetingen (cm)", disabled=True, width="medium"),
             "price":           st.column_config.NumberColumn("Prijs", disabled=True, width="small", format="€ %.2f"),
         },
         column_order=["_select", "handle", "product_title", "vendor",
-                      "product_status", "pipeline_status", "hoofdcategorie", "price"],
+                      "product_status", "pipeline_status", "hoofdcategorie",
+                      "heeft_title", "heeft_desc", "afmetingen", "price"],
         hide_index=True,
         disabled=["handle"] + TOON[1:],
         width="stretch",
