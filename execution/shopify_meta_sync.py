@@ -273,6 +273,19 @@ def _upsert(rows: list[dict], batch_size: int = 500) -> None:
             "(te vinden in Supabase Dashboard → Settings → Database → Connection string)"
         )
 
+    # Sanity check: DSN moet beginnen met postgresql:// of postgres://.
+    # Op Railway is dit fout gegaan als de waarde de variabele-naam zelf is geworden
+    # (alle leestekens vervangen door _, alles uppercase). Detecteer en faal duidelijk.
+    if not (db_url.startswith("postgresql://") or db_url.startswith("postgres://")):
+        sys.exit(
+            "FOUT: DATABASE_URL is geen geldige Postgres-DSN.\n"
+            f"  Huidige waarde (begint met): {db_url[:60]}...\n"
+            "  Verwacht: postgresql://postgres:[pw]@db.[ref].supabase.co:5432/postgres\n\n"
+            "Op Railway? Check Variables → DATABASE_URL: zet daar de echte URI "
+            "(Supabase Dashboard → Settings → Database → Connection string → URI), "
+            "niet een template-referentie."
+        )
+
     conn = psycopg2.connect(db_url)
     conn.autocommit = False
     cur = conn.cursor()

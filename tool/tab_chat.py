@@ -108,6 +108,69 @@ TOOLS = [
         },
     },
     {
+        "name": "status_voor_skus",
+        "description": (
+            "Bekijk de complete status van een lijst SKU's in één keer. "
+            "Gebruik dit ALTIJD als de gebruiker vraagt 'hoe zit het met deze producten?' "
+            "of vergelijkbaar, vooral na een bestand-upload met SKU's. "
+            "Geeft per SKU: vendor, shopify-status (active/archived/draft), heeft meta title, "
+            "heeft meta description, hoofdcategorie ingevuld, pipeline_status. "
+            "Plus een aggregaat-overzicht (hoeveel online, hoeveel zonder meta, etc.)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "skus": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Lijst SKU's, maximaal 500.",
+                },
+            },
+            "required": ["skus"],
+        },
+    },
+    {
+        "name": "open_in_pipeline",
+        "description": (
+            "Stel voor om de gebruiker over te zetten naar een specifieke pijplijn-pagina, "
+            "met geüploade SKU's al voorgeladen. Gebruik dit ALTIJD na een bestand-upload "
+            "wanneer duidelijk is welke pijplijn past, of wanneer de gebruiker expliciet vraagt "
+            "om iets in een specifieke pagina te openen.\n\n"
+            "Beschikbare pijplijnen:\n"
+            "- 'herverwerk' = Archief herverwerken (SKU-lijst van bestaande producten die opnieuw moeten)\n"
+            "- 'pipeline'   = Volledige pipeline (nieuwe leveranciersexport — Excel met naam/prijs/foto's)\n"
+            "- 'nieuwe'     = Nieuwe producten (legacy upload-flow)\n"
+            "- 'prijzen'    = Prijzen bijwerken\n"
+            "- 'collectie'  = Collectie SEO-teksten\n\n"
+            "Na deze tool verschijnt een primary 'Open in {pijplijn}'-knop in de UI. "
+            "Bevestig kort, geef geen lange uitleg."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pijplijn": {
+                    "type": "string",
+                    "enum": ["herverwerk", "pipeline", "nieuwe", "prijzen", "collectie"],
+                    "description": "Welke pijplijn-pagina openen.",
+                },
+                "skus": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "SKU's om voor te laden. Voor 'herverwerk' worden deze in de "
+                        "herverwerk-tab automatisch opgehaald uit Supabase. Voor andere "
+                        "pijplijnen wordt de lijst als context aangeboden. Optioneel."
+                    ),
+                },
+                "reden": {
+                    "type": "string",
+                    "description": "Eén zin: waarom is dit de juiste pijplijn? (Bv. 'leveranciersexport met 247 nieuwe producten — past in volledige pipeline')",
+                },
+            },
+            "required": ["pijplijn", "reden"],
+        },
+    },
+    {
         "name": "bouw_hextom_export",
         "description": (
             "Bouw een Hextom-formaat Excel-bestand voor download. "
@@ -166,6 +229,27 @@ Je hebt toegang tot twee databases via tools.
 - Wees bondig: geef een korte samenvatting + de data, geen lange uitleg.
 - Taal: Nederlands.
 - Als een vraag onduidelijk is: zoek in beide databases en combineer de resultaten.
+
+## Bestand-uploads
+Als de gebruiker een bestand bijvoegt, ontvang je een systeem-context met bestandsnaam, kolommen
+en gedetecteerde SKU's.
+
+Stappenplan na een SKU-lijst:
+1. Vraag de gebruiker NIET wat hij wil — als hij niets zegt, roep `status_voor_skus` aan met de
+   geüploade SKU's en geef een korte samenvatting (zoveel online, zoveel zonder meta, etc.).
+2. Bij vragen als "hoe zit het met deze producten?", "staan ze al online?", "zijn ze
+   gecategoriseerd?": ALTIJD eerst `status_voor_skus` aanroepen.
+3. Als de gebruiker zegt "fix het", "los het op", "ga aan de slag": stel `open_in_pipeline`
+   met pijplijn='herverwerk' voor zodat hij de batch in de herverwerk-tab kan corrigeren
+   (daar zit al een bulk-correctie-chat).
+
+Pijplijn-routing bij bestand-upload:
+- SKU-lijst van bestaande producten → 'herverwerk'
+- Leveranciersexport met naam/prijs/foto's voor NIEUWE producten → 'pipeline'
+- Prijslijst (SKU + nieuwe prijs) → 'prijzen'
+- Collectie SEO-teksten → 'collectie'
+
+Bij twijfel: vraag eerst, route niet automatisch.
 """
 
 
@@ -216,6 +300,107 @@ def _sku_map() -> dict[str, str]:
         return mapping
     except Exception:
         return {}
+
+
+# ── File-upload parsing ───────────────────────────────────────────────────────
+
+# Pages worden zo gemapt (zie tool/app.py NAV) — gebruikt voor st.switch_page().
+_PIJPLIJN_PAGES = {
+    "herverwerk": "pages/08_Herverwerk.py",
+    "pipeline":   "pages/10_Pipeline.py",
+    "nieuwe":     "pages/01_Nieuwe.py",
+    "prijzen":    "pages/02_Prijzen.py",
+    "collectie":  "pages/03_Collectie.py",
+}
+
+
+def _parse_uploaded_file(uploaded) -> dict:
+    """Lees een geüpload bestand en haal context eruit voor Claude.
+
+    Returns: {"naam": str, "type": str, "rijen": int, "kolommen": [str],
+              "skus": [str], "sample": [dict], "fout": str | None}
+    """
+    naam = getattr(uploaded, "name", "?")
+    info: dict = {"naam": naam, "type": "?", "rijen": 0, "kolommen": [],
+                  "skus": [], "sample": [], "fout": None}
+    try:
+        raw = uploaded.read()
+        uploaded.seek(0)  # zodat de gebruiker 'm later opnieuw kan lezen
+        lower = naam.lower()
+
+        if lower.endswith((".xlsx", ".xls")):
+            df = pd.read_excel(io.BytesIO(raw), dtype=str, engine="openpyxl")
+            info["type"] = "excel"
+        elif lower.endswith(".csv"):
+            for enc in ("utf-8-sig", "utf-8", "cp1252"):
+                try:
+                    df = pd.read_csv(io.BytesIO(raw), dtype=str, encoding=enc,
+                                     keep_default_na=False)
+                    break
+                except UnicodeDecodeError:
+                    continue
+            else:
+                info["fout"] = "CSV niet te lezen — onbekende encoding."
+                return info
+            info["type"] = "csv"
+        elif lower.endswith(".txt"):
+            try:
+                text = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                text = raw.decode("cp1252", errors="ignore")
+            regels = [ln.strip() for ln in text.splitlines() if ln.strip()]
+            info.update({
+                "type": "txt", "rijen": len(regels),
+                "skus": regels[:1000],
+                "sample": [{"regel": r} for r in regels[:5]],
+            })
+            return info
+        else:
+            info["fout"] = f"Bestandstype niet ondersteund: {lower.split('.')[-1]}"
+            return info
+
+        df = df.fillna("")
+        info["rijen"] = len(df)
+        info["kolommen"] = list(df.columns)
+
+        # Zoek SKU-kolom
+        for kandidaat in ("sku", "SKU", "Sku", "brand_id", "Variant SKU",
+                           "artikelnummer", "Artikelnummer"):
+            if kandidaat in df.columns:
+                info["skus"] = [str(s).strip() for s in df[kandidaat].tolist()
+                                 if str(s).strip()][:1000]
+                break
+        # Sample: eerste 5 rijen, alleen tekst-velden, ingekort
+        for _, row in df.head(5).iterrows():
+            info["sample"].append({
+                k: (str(v)[:80] if v else "") for k, v in row.items()
+            })
+    except Exception as e:
+        info["fout"] = f"Parse-fout: {e}"
+    return info
+
+
+def _bestand_context_voor_claude(parsed_files: list[dict]) -> str:
+    """Bouw een context-bericht over de geüploade bestanden voor Claude."""
+    if not parsed_files:
+        return ""
+    delen = ["📎 **Bijgevoegde bestanden:**"]
+    for f in parsed_files:
+        if f.get("fout"):
+            delen.append(f"\n- `{f['naam']}` — FOUT: {f['fout']}")
+            continue
+        regel = f"\n- `{f['naam']}` ({f['type']}, {f['rijen']} rijen)"
+        if f.get("kolommen"):
+            kols = ", ".join(f["kolommen"][:15])
+            regel += f"\n  Kolommen: {kols}"
+        if f.get("skus"):
+            sample_skus = ", ".join(f["skus"][:5])
+            extra = f" … (+{len(f['skus']) - 5} meer)" if len(f["skus"]) > 5 else ""
+            regel += f"\n  SKU's gedetecteerd ({len(f['skus'])}): {sample_skus}{extra}"
+        if f.get("sample"):
+            regel += f"\n  Eerste rij: {f['sample'][0]}"
+        delen.append(regel)
+    return "\n".join(delen)
 
 
 # ── Tool uitvoering ───────────────────────────────────────────────────────────
@@ -297,6 +482,113 @@ def _uitvoer_zoek_pipeline(params: dict) -> list[dict]:
         for r in rows:
             r["shopify_status"] = params["shopify_status"]
     return rows
+
+
+def _uitvoer_status_voor_skus(skus: list[str]) -> dict:
+    """Geef per SKU een status-overzicht + aggregaat. Maximaal 500 SKU's."""
+    sb = _sb()
+    if not sb:
+        return {"fout": "Geen Supabase-verbinding."}
+    skus = [s for s in skus if s][:500]
+    if not skus:
+        return {"fout": "Lege SKU-lijst."}
+
+    # products_curated → handle, hoofdcategorie, pipeline_status, supplier
+    curated: dict[str, dict] = {}
+    for i in range(0, len(skus), 200):
+        chunk = skus[i:i + 200]
+        try:
+            res = sb.table("products_curated").select(
+                "sku,handle,supplier,hoofdcategorie,pipeline_status,product_title_nl"
+            ).in_("sku", chunk).execute().data or []
+            for r in res:
+                curated[r["sku"]] = r
+        except Exception:
+            pass
+
+    # shopify_meta_audit → product_status, current_meta_title, current_meta_description
+    handles = [c["handle"] for c in curated.values() if c.get("handle")]
+    audit_by_handle: dict[str, dict] = {}
+    if handles:
+        for i in range(0, len(handles), 200):
+            chunk = handles[i:i + 200]
+            try:
+                res = sb.table("shopify_meta_audit").select(
+                    "handle,product_status,current_meta_title,current_meta_description,vendor"
+                ).in_("handle", chunk).execute().data or []
+                for r in res:
+                    audit_by_handle[r["handle"]] = r
+            except Exception:
+                pass
+
+    # Per SKU samenvoegen
+    per_sku: list[dict] = []
+    aggr = {
+        "totaal":            len(skus),
+        "niet_in_pipeline":  0,
+        "active":            0,
+        "archived":          0,
+        "draft":             0,
+        "niet_in_shopify":   0,
+        "zonder_meta_title": 0,
+        "zonder_meta_desc":  0,
+        "zonder_categorie":  0,
+        "pipeline_ready":    0,
+    }
+    vendor_telling: dict[str, int] = {}
+
+    for sku in skus:
+        cur = curated.get(sku)
+        if not cur:
+            aggr["niet_in_pipeline"] += 1
+            per_sku.append({"sku": sku, "status": "niet in pipeline"})
+            continue
+        handle = cur.get("handle", "")
+        aud = audit_by_handle.get(handle, {}) if handle else {}
+        vendor = aud.get("vendor") or cur.get("supplier", "")
+        if vendor:
+            vendor_telling[vendor] = vendor_telling.get(vendor, 0) + 1
+
+        shop_status = aud.get("product_status") or "niet_in_shopify"
+        if shop_status in aggr:
+            aggr[shop_status] += 1
+        has_title = bool((aud.get("current_meta_title") or "").strip())
+        has_desc  = bool((aud.get("current_meta_description") or "").strip())
+        has_cat   = bool((cur.get("hoofdcategorie") or "").strip())
+        if not has_title: aggr["zonder_meta_title"] += 1
+        if not has_desc:  aggr["zonder_meta_desc"] += 1
+        if not has_cat:   aggr["zonder_categorie"] += 1
+        if (cur.get("pipeline_status") or "") == "ready":
+            aggr["pipeline_ready"] += 1
+
+        per_sku.append({
+            "sku":             sku,
+            "vendor":          vendor or "—",
+            "handle":          handle or "—",
+            "shopify":         shop_status,
+            "meta_title":      "✓" if has_title else "—",
+            "meta_desc":       "✓" if has_desc else "—",
+            "categorie":       cur.get("hoofdcategorie") or "—",
+            "pipeline_status": cur.get("pipeline_status") or "—",
+            "titel_nl":        cur.get("product_title_nl") or "—",
+        })
+
+    # Probleem-rijen voor detail (max 30) — als minstens één issue
+    problemen = [
+        r for r in per_sku
+        if r.get("status") == "niet in pipeline"
+        or r.get("shopify") == "niet_in_shopify"
+        or r.get("meta_title") == "—"
+        or r.get("meta_desc") == "—"
+        or r.get("categorie") == "—"
+    ][:30]
+
+    return {
+        "aggregaat":       aggr,
+        "vendor_telling":  dict(sorted(vendor_telling.items(), key=lambda x: -x[1])[:15]),
+        "probleem_rijen":  problemen,
+        "totaal_rijen":    len(per_sku),
+    }
 
 
 def _uitvoer_update(updates: list[dict]) -> int:
@@ -383,6 +675,49 @@ def _run_claude(messages: list[dict]) -> tuple[str, list[dict] | None]:
                     "type": "tool_result",
                     "tool_use_id": tc.id,
                     "content": f"Updates klaargezet voor bevestiging: {len(pending_updates)} items. Samenvatting: {sam}",
+                })
+
+            elif tc.name == "status_voor_skus":
+                try:
+                    skus = [s for s in (tc.input.get("skus") or []) if s]
+                    if not skus:
+                        # Fallback: gebruik laatst-geüploade SKU's als gebruiker
+                        # ze niet expliciet noemt.
+                        skus = st.session_state.get("chat_geuploade_skus") or []
+                    if not skus:
+                        result_str = "Geen SKU's opgegeven en geen recent geüploade SKU's gevonden."
+                    else:
+                        status = _uitvoer_status_voor_skus(skus)
+                        result_str = f"Status van {len(skus)} SKU's:\n{status}"
+                except Exception as e:
+                    result_str = f"Fout: {e}"
+                tool_results_pending.append({
+                    "type": "tool_result",
+                    "tool_use_id": tc.id,
+                    "content": result_str,
+                })
+
+            elif tc.name == "open_in_pipeline":
+                pijplijn = (tc.input.get("pijplijn") or "").strip()
+                skus = [s for s in (tc.input.get("skus") or []) if s]
+                reden = (tc.input.get("reden") or "").strip()
+                if pijplijn not in _PIJPLIJN_PAGES:
+                    result_str = f"Onbekende pijplijn '{pijplijn}'."
+                else:
+                    st.session_state["chat_route_pending"] = {
+                        "pijplijn": pijplijn,
+                        "page":     _PIJPLIJN_PAGES[pijplijn],
+                        "skus":     skus,
+                        "reden":    reden,
+                    }
+                    result_str = (
+                        f"Routing voorgesteld: '{pijplijn}' ({len(skus)} SKU's). "
+                        "Open-knop verschijnt in UI. Bevestig kort."
+                    )
+                tool_results_pending.append({
+                    "type": "tool_result",
+                    "tool_use_id": tc.id,
+                    "content": result_str,
                 })
 
             elif tc.name == "bouw_hextom_export":
@@ -561,12 +896,77 @@ def render() -> None:
                 st.session_state["chat_download_pending"] = None
                 st.rerun()
 
-    # Chat-input
-    vraag = st.chat_input("Stel een vraag over de productdata...")
+    # Wachtende routing-suggestie
+    if st.session_state.get("chat_route_pending"):
+        r = st.session_state["chat_route_pending"]
+        st.divider()
+        st.markdown(
+            f"### 💡 Voorstel: open in **{r['pijplijn']}** "
+            f"({len(r.get('skus') or [])} SKU's)"
+        )
+        if r.get("reden"):
+            st.caption(r["reden"])
+
+        c_go, c_no = st.columns([3, 1])
+        with c_go:
+            if st.button(f"➡ Open in {r['pijplijn']}", type="primary", key="chat_route_go"):
+                # Preload SKUs voor herverwerk zodat de pagina meteen vol staat
+                if r["pijplijn"] == "herverwerk" and r.get("skus"):
+                    try:
+                        from tab_herverwerk import _load_by_skus
+                        with st.spinner(f"Voorladen van {len(r['skus'])} producten..."):
+                            rows = _load_by_skus(r["skus"])
+                        st.session_state["hv_geladen"] = True
+                        st.session_state["hv_rows_override"] = rows
+                    except Exception as e:
+                        st.warning(f"Voorladen mislukt: {e}")
+                # Voor andere pagina's: laat SKU's beschikbaar als generieke context
+                if r.get("skus"):
+                    st.session_state["chat_geuploade_skus"] = r["skus"]
+                page = r.get("page", "")
+                st.session_state["chat_route_pending"] = None
+                if page:
+                    st.switch_page(page)
+        with c_no:
+            if st.button("Niet nu", key="chat_route_no"):
+                st.session_state["chat_route_pending"] = None
+                st.rerun()
+
+    # Chat-input — accepteer bestanden (Excel/CSV/TXT) naast tekst
+    vraag = st.chat_input(
+        "Stel een vraag of sleep een bestand erin...",
+        accept_file="multiple",
+        file_type=["xlsx", "xls", "csv", "txt"],
+    )
     if vraag:
-        st.session_state["chat_history"].append({"role": "user", "content": vraag})
+        # vraag is ofwel een string (geen file-upload) ofwel een ChatInputValue-object
+        tekst = getattr(vraag, "text", vraag if isinstance(vraag, str) else "") or ""
+        uploaded_files = getattr(vraag, "files", []) or []
+
+        parsed_files: list[dict] = []
+        for f in uploaded_files:
+            parsed_files.append(_parse_uploaded_file(f))
+
+        delen: list[str] = []
+        if tekst.strip():
+            delen.append(tekst.strip())
+        if parsed_files:
+            delen.append(_bestand_context_voor_claude(parsed_files))
+        user_msg = "\n\n".join(delen).strip()
+        if not user_msg:
+            return
+
+        # Zet alle geüploade SKU's in session_state zodat Claude ze kan oppakken
+        if parsed_files:
+            alle_skus: list[str] = []
+            for pf in parsed_files:
+                alle_skus.extend(pf.get("skus") or [])
+            if alle_skus:
+                st.session_state["chat_geuploade_skus"] = alle_skus
+
+        st.session_state["chat_history"].append({"role": "user", "content": user_msg})
         with st.chat_message("user"):
-            st.markdown(vraag)
+            st.markdown(user_msg)
 
         with st.chat_message("assistant"):
             with st.spinner("Bezig..."):
