@@ -1050,7 +1050,7 @@ def _stap_namen() -> None:
             "Letterlijke tekst-vervanging in titels. Zoekt eerst in de NL-titel; "
             "als daar geen match is, zoekt 'ie ook in de originele Engelse titel "
             "(handig om foute vertalingen van Haiku te corrigeren). "
-            "Hoofdletter-ongevoelig."
+            "Hoofdletter-ongevoelig en tolerant voor copy-paste verschillen (spaties, NBSP, leestekens)."
         )
         cV1, cV2 = st.columns(2)
         with cV1:
@@ -1060,17 +1060,29 @@ def _stap_namen() -> None:
             qr_to = st.text_input("Naar", key="hvp_qrv_to",
                                    placeholder="bv. Plastic inzetpot")
 
-        # Preview matches: NL eerst, anders EN
-        from_l = (qr_from or "").strip()
+        # Normalisatie-functie: maakt match tolerant voor whitespace/NBSP/etc.
+        def _norm(s: str) -> str:
+            s = (s or "").replace("\xa0", " ").replace(" ", " ").replace("​", "")
+            s = re.sub(r"\s+", " ", s).strip()
+            return s.lower()
+
+        def _build_fuzzy_pattern(needle: str) -> re.Pattern:
+            """Bouwt een regex die tolerant is voor whitespace-verschillen.
+            'Plastic Pot inserts' matcht ook 'Plastic  Pot Inserts' of met NBSP."""
+            woorden = re.split(r"\s+", needle.strip())
+            return re.compile(r"\s+".join(re.escape(w) for w in woorden), re.IGNORECASE)
+
+        from_raw = (qr_from or "").strip()
         to_v = (qr_to or "").strip()
         n_nl = 0
         n_en = 0
         voorbeelden = []
-        if from_l:
-            patroon = re.compile(re.escape(from_l), re.IGNORECASE)
+        n_hit = 0
+        if from_raw:
+            patroon = _build_fuzzy_pattern(from_raw)
             for r in data:
-                nl = r.get("product_title_nl", "") or ""
-                en = r.get("product_title", "") or r.get("product_name_raw", "") or ""
+                nl = (r.get("product_title_nl", "") or "").replace("\xa0", " ")
+                en = (r.get("product_title", "") or r.get("product_name_raw", "") or "").replace("\xa0", " ")
                 if patroon.search(nl):
                     n_nl += 1
                     if len(voorbeelden) < 5:
@@ -1078,37 +1090,45 @@ def _stap_namen() -> None:
                 elif patroon.search(en):
                     n_en += 1
                     if len(voorbeelden) < 5:
-                        # NL-titel wordt overschreven met EN-titel waarin term vervangen is
                         voorbeelden.append(("EN→NL", nl, patroon.sub(to_v, en)))
             n_hit = n_nl + n_en
-            st.info(f"📊 {n_hit} titels worden aangepast"
-                    + (f" ({n_nl} match in NL, {n_en} match in EN→NL)" if n_en else ""))
-            if voorbeelden:
-                with st.expander("Voorbeeld vóór → na", expanded=True):
-                    for soort, v_oud, v_nw in voorbeelden:
-                        st.caption(soort)
-                        st.text(f"OUD:  {v_oud}")
-                        st.text(f"NIEUW: {v_nw}")
+            if n_hit == 0:
+                st.warning(
+                    f"📊 0 titels gevonden met '{from_raw}'. "
+                    "Tip: kopieer-plak een stuk van een bestaande titel uit de tabel hieronder, of typ alleen kernwoorden."
+                )
+                # Toon 3 voorbeelden uit huidige data zodat user ziet hoe ze er ECHT uit zien
+                with st.expander("Zo zien je huidige NL-titels eruit (eerste 5):", expanded=True):
+                    for r in data[:5]:
+                        st.text(f"NL: {r.get('product_title_nl','')}")
+                        st.text(f"EN: {r.get('product_title','') or r.get('product_name_raw','')}")
                         st.divider()
-        else:
-            n_hit = 0
+            else:
+                st.info(f"📊 {n_hit} titels worden aangepast"
+                        + (f" ({n_nl} match in NL, {n_en} match in EN→NL)" if n_en else ""))
+                if voorbeelden:
+                    with st.expander("Voorbeeld vóór → na", expanded=True):
+                        for soort, v_oud, v_nw in voorbeelden:
+                            st.caption(soort)
+                            st.text(f"OUD:  {v_oud}")
+                            st.text(f"NIEUW: {v_nw}")
+                            st.divider()
 
         onthouden = st.checkbox("Onthouden voor toekomstige batches", value=True, key="hvp_qrv_mem")
 
         if st.button(
             f"✅ Pas toe op {n_hit} titels",
             type="primary",
-            disabled=not (from_l and n_hit > 0),
+            disabled=not (from_raw and n_hit > 0),
             key="hvp_qrv_apply",
         ):
-            patroon = re.compile(re.escape(from_l), re.IGNORECASE)
+            patroon = _build_fuzzy_pattern(from_raw)
             for r in data:
-                nl = r.get("product_title_nl", "") or ""
-                en = r.get("product_title", "") or r.get("product_name_raw", "") or ""
+                nl = (r.get("product_title_nl", "") or "").replace("\xa0", " ")
+                en = (r.get("product_title", "") or r.get("product_name_raw", "") or "").replace("\xa0", " ")
                 if patroon.search(nl):
                     r["product_title_nl"] = patroon.sub(to_v, nl)
                 elif patroon.search(en):
-                    # Bouw nieuwe NL-titel op basis van EN met term vervangen
                     r["product_title_nl"] = patroon.sub(to_v, en)
             st.session_state["hvp_data"] = data
             if onthouden:
@@ -1117,8 +1137,8 @@ def _stap_namen() -> None:
                         "stap": "titel",
                         "rule_type": "title_replace",
                         "scope": "alle",
-                        "input_text": f"snelle vervanging: {from_l} → {to_v}",
-                        "action": {"replace": [{"from": from_l, "to": to_v}], "match_in_en": True},
+                        "input_text": f"snelle vervanging: {from_raw} → {to_v}",
+                        "action": {"replace": [{"from": from_raw, "to": to_v}], "match_in_en": True, "fuzzy_ws": True},
                         "status": "applied",
                         "applied_at": datetime.utcnow().isoformat(),
                         "applied_by": "chef@seokitchen.nl",
