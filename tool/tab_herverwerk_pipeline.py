@@ -303,27 +303,43 @@ def _chat_box(stap: int, kolom_voorbeeld: str) -> None:
                 parsed = _interpret_chat(stap, txt.strip(), voorbeelden)
             if not parsed:
                 return
-            rt = parsed.get("rule_type")
-            act = parsed.get("action") or {}
-            expl = parsed.get("explanation", "")
-            scope = parsed.get("scope", "alle")
 
-            if rt == "unclear" or not rt:
-                st.warning(f"Onduidelijk: {expl or 'parse-fout'}")
+            # Sonnet kan een dict (1 regel) of een list (meerdere regels) teruggeven
+            if isinstance(parsed, list):
+                regels = parsed
+            elif isinstance(parsed, dict) and "rules" in parsed and isinstance(parsed["rules"], list):
+                regels = parsed["rules"]
+            elif isinstance(parsed, dict) and "operations" in parsed and isinstance(parsed["operations"], list):
+                regels = parsed["operations"]
+            elif isinstance(parsed, dict):
+                regels = [parsed]
+            else:
+                st.warning("Onverwachte respons van Sonnet.")
                 return
 
-            raakt = _apply_rule_locally(stap, rt, act, data)
-            st.session_state["hvp_data"] = data
-            opgeslagen = _save_rule(stap, rt, act, scope, txt.strip(), expl, raakt)
+            total_raakt = 0
+            laatste_expl = ""
+            for parsed_rule in regels:
+                if not isinstance(parsed_rule, dict):
+                    continue
+                rt = parsed_rule.get("rule_type")
+                act = parsed_rule.get("action") or {}
+                expl = parsed_rule.get("explanation", "")
+                scope = parsed_rule.get("scope", "alle")
+                laatste_expl = expl or laatste_expl
 
-            msg = f"✅ {rt} — {raakt} records aangepast"
-            if rt in ("title_instruction", "meta_instruction"):
-                msg = f"✅ Regel onthouden voor toekomstige runs ({rt})"
-            if opgeslagen:
-                msg += " · opgeslagen in geheugen"
-            st.success(msg)
-            if expl:
-                st.caption(expl)
+                if rt == "unclear" or not rt:
+                    st.warning(f"Onduidelijk: {expl or 'parse-fout'}")
+                    continue
+
+                raakt = _apply_rule_locally(stap, rt, act, data)
+                total_raakt += raakt
+                _save_rule(stap, rt, act, scope, txt.strip(), expl, raakt)
+
+            st.session_state["hvp_data"] = data
+            st.success(f"✅ {len(regels)} regel(s) toegepast · {total_raakt} records aangepast · opgeslagen in geheugen")
+            if laatste_expl:
+                st.caption(laatste_expl)
             st.session_state[flag_clear] = True
             st.rerun()
 
