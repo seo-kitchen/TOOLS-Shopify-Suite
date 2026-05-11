@@ -193,7 +193,18 @@ Beschikbare rule_types:
 - translation — en→nl voor materiaal of kleur
   action: {"veld": "materiaal" of "kleur", "en": "...", "nl": "..."}
 - category_override — voor specifieke SKU's één categorie zetten (eventueel met 2e subcat)
-  action: {"skus": ["..."], "hoofdcategorie": "...", "subcategorie": "...", "sub_subcategorie": "...", "sub_subcategorie_2": "..."}""",
+  action: {"skus": ["..."], "hoofdcategorie": "...", "subcategorie": "...", "sub_subcategorie": "...", "sub_subcategorie_2": "..."}
+- bulk_classify — gebruik Sonnet om PER PRODUCT iets te bepalen op basis van data uit products_raw
+  Use deze als de gebruiker zegt 'op basis van beschrijving/leverancier-info bepaal X voor alle producten'.
+  Beschikbare bron-velden uit products_raw: leverancier_category, leverancier_item_cat,
+    materiaal_raw, product_name_raw, designer, kleur_en, hoogte_cm, lengte_cm, breedte_cm
+  action: {
+    "source_fields": ["leverancier_category", "leverancier_item_cat", "materiaal_raw", "product_name_raw"],
+    "target_field": "sub_subcategorie_2",  // of sub_subcategorie / kleur_nl / materiaal_nl
+    "criterion": "Bepaal of dit een binnen-pot, buiten-pot of beide is...",
+    "allowed_values": ["Bloempotten binnen", "Bloempotten buiten", "beide", ""],
+    "skip_if_set": false  // true = sla over als target_field al gevuld is
+  }""",
     3: """Stap: meta description.
 Beschikbare rule_types:
 - meta_replace — vervang X door Y in alle meta descriptions
@@ -243,6 +254,131 @@ Geef ALLEEN valide JSON, geen markdown of uitleg eromheen."""
     except Exception as e:
         st.error(f"Parse-fout: {e}")
         return None
+
+
+_RAW_VELDEN_TOEGESTAAN = {
+    "leverancier_category", "leverancier_item_cat", "materiaal_raw",
+    "product_name_raw", "designer", "kleur_en",
+    "hoogte_cm", "lengte_cm", "breedte_cm",
+}
+
+
+def _run_bulk_classify(action: dict, data: list[dict]) -> int:
+    """Vraag Sonnet PER PRODUCT iets te bepalen op basis van velden uit products_raw.
+
+    Batch van 25 producten per call, terug-mapping op SKU. Past target_field in
+    hvp_data aan, herbouwt tags als sub_subcategorie* geraakt wordt.
+    """
+    import anthropic
+    from execution.transform_v2 import build_tags
+
+    src_fields = [f for f in (action.get("source_fields") or []) if f in _RAW_VELDEN_TOEGESTAAN]
+    if not src_fields:
+        src_fields = ["leverancier_category", "leverancier_item_cat", "materiaal_raw", "product_name_raw"]
+    target = action.get("target_field") or "sub_subcategorie_2"
+    criterion = (action.get("criterion") or "").strip()
+    allowed = action.get("allowed_values") or []
+    skip_if_set = bool(action.get("skip_if_set", False))
+
+    if not criterion:
+        st.warning("bulk_classify zonder criterion overgeslagen.")
+        return 0
+
+    # Welke SKU's moeten we classificeren?
+    sku_lijst = [
+        r.get("sku", "") for r in data
+        if r.get("sku") and (not skip_if_set or not (r.get(target) or "").strip())
+    ]
+    if not sku_lijst:
+        st.info("Geen producten om te classificeren.")
+        return 0
+
+    # Haal source fields op uit products_raw (in batches van 200 voor PostgREST IN-limit)
+    sb = _get_sb()
+    select = "sku," + ",".join(src_fields)
+    raw_map: dict[str, dict] = {}
+    for i in range(0, len(sku_lijst), 200):
+        chunk = sku_lijst[i:i + 200]
+        try:
+            res = sb.table("products_raw").select(select).in_("sku", chunk).execute().data or []
+            for r in res:
+                raw_map[r["sku"]] = r
+        except Exception as e:
+            st.error(f"Fout bij ophalen products_raw: {e}")
+            return 0
+
+    # Sonnet-batches van 25
+    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
+    BATCH = 25
+    classifications: dict[str, str] = {}
+    bar = st.progress(0.0, text=f"Sonnet classificeert {len(sku_lijst)} producten...")
+
+    for bi in range(0, len(sku_lijst), BATCH):
+        batch_skus = sku_lijst[bi:bi + BATCH]
+        items = []
+        for sku in batch_skus:
+            raw = raw_map.get(sku, {})
+            felden = {f: raw.get(f, "") for f in src_fields}
+            items.append({"sku": sku, **felden})
+
+        allowed_txt = (
+            f"\nToegestane waarden (kies exact één): {json.dumps(allowed, ensure_ascii=False)}"
+            if allowed else ""
+        )
+        system = (
+            "Je classificeert producten op basis van leveranciers-velden.\n"
+            f"Doel: {criterion}{allowed_txt}\n\n"
+            "Output JSON: {\"results\": [{\"sku\": \"...\", \"value\": \"...\"}, ...]}\n"
+            "Eén entry per SKU, exact zoals in input. Geen markdown, alleen JSON."
+        )
+        try:
+            resp = client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=2000,
+                system=system,
+                messages=[{"role": "user", "content": json.dumps(items, ensure_ascii=False)}],
+            )
+            text = resp.content[0].text.strip()
+            if text.startswith("```"):
+                text = text.split("```")[1]
+                if text.startswith("json"):
+                    text = text[4:]
+            parsed = json.loads(text.strip())
+            for entry in (parsed.get("results") or []):
+                sku = entry.get("sku", "")
+                val = entry.get("value", "")
+                if sku:
+                    classifications[sku] = val
+        except Exception as e:
+            st.warning(f"Batch {bi // BATCH + 1} mislukt: {e}")
+
+        bar.progress(min(1.0, (bi + BATCH) / len(sku_lijst)),
+                      text=f"Sonnet classificeert {min(bi + BATCH, len(sku_lijst))}/{len(sku_lijst)}...")
+
+    bar.progress(1.0, text="Klaar.")
+
+    # Pas classificaties toe + herbouw tags waar nodig
+    raakt = 0
+    tag_velden = {"sub_subcategorie", "sub_subcategorie_2"}
+    for r in data:
+        sku = r.get("sku", "")
+        if sku not in classifications:
+            continue
+        val = classifications[sku]
+        if val and (not skip_if_set or not (r.get(target) or "").strip()):
+            r[target] = val
+            raakt += 1
+            if target in tag_velden:
+                extra = [r.get("sub_subcategorie_2")] if r.get("sub_subcategorie_2") else None
+                r["tags"] = build_tags(
+                    r.get("hoofdcategorie", ""),
+                    r.get("subcategorie", ""),
+                    r.get("sub_subcategorie", ""),
+                    r.get("fase", ""),
+                    extra_tags=extra,
+                )
+
+    return raakt
 
 
 def _apply_rule_locally(stap: int, rule_type: str, action: dict, data: list[dict]) -> int:
@@ -323,6 +459,9 @@ def _apply_rule_locally(stap: int, rule_type: str, action: dict, data: list[dict
                 r["collectie"] = act.get("subcategorie", r.get("collectie", ""))
                 r["_cat_gemapt"] = True
                 raakt += 1
+
+    elif stap == 2 and rule_type == "bulk_classify":
+        raakt = _run_bulk_classify(act, data)
 
     elif stap == 3 and rule_type == "meta_replace":
         paren = [(p.get("from", ""), p.get("to", "")) for p in (act.get("replace") or [])]
