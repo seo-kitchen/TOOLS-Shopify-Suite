@@ -706,8 +706,31 @@ def _stap_meta() -> None:
         if st.button(f"Schrijf {n} meta descriptions", type="primary", key="hvp_s3_run"):
             try:
                 import anthropic
+                from execution.transform_v2 import load_active_learnings
+                sb = _get_sb()
+                meta_lr = [L for L in load_active_learnings(sb) if L.get("stap") == "meta"]
+
+                # Verzamel meta_instruction's en meta_replace's
+                meta_instructies: list[str] = []
+                meta_replaces: list[tuple[str, str]] = []
+                for L in meta_lr:
+                    act = L.get("action") or {}
+                    if L.get("rule_type") == "meta_instruction":
+                        inst = (act.get("instruction") or "").strip()
+                        if inst:
+                            meta_instructies.append(inst)
+                    elif L.get("rule_type") == "meta_replace":
+                        for p in (act.get("replace") or []):
+                            fr, to = (p.get("from") or "").strip(), (p.get("to") or "").strip()
+                            if fr:
+                                meta_replaces.append((fr, to))
+
+                extra_regels = ""
+                if meta_instructies:
+                    extra_regels = "\nEXTRA REGELS (uit eerdere feedback):\n- " + "\n- ".join(meta_instructies)
+
                 client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY",""))
-                bar = st.progress(0.0, text="Bezig...")
+                bar = st.progress(0.0, text=f"Bezig ({len(meta_lr)} actieve meta-regels)...")
 
                 for idx, r in enumerate(data):
                     bar.progress((idx + 1) / n, text=f"{idx+1}/{n}: {r.get('sku','')}")
@@ -736,11 +759,16 @@ def _stap_meta() -> None:
                             messages=[{"role": "user", "content":
                                 f"Schrijf een Nederlandse SEO meta description (120–155 tekens).\n"
                                 f"Product: {title}\nMerk: {vendor}\n{extra}\n\n"
-                                "Regels: 'je'-vorm, eindig met CTA, vermeld gratis verzending €75 als dat past.\n"
+                                "Regels: 'je'-vorm, eindig met CTA, vermeld gratis verzending €75 als dat past."
+                                f"{extra_regels}\n\n"
                                 "Geef alleen de meta description terug."}],
                         )
-                        r["meta_description"] = resp.content[0].text.strip()[:155]
-                    except Exception as e:
+                        meta = resp.content[0].text.strip()[:155]
+                        # Pas meta_replace regels post-hoc toe
+                        for fr, to in meta_replaces:
+                            meta = re.sub(re.escape(fr), to, meta, flags=re.IGNORECASE)
+                        r["meta_description"] = meta[:155]
+                    except Exception:
                         r["meta_description"] = ""
 
                 bar.progress(1.0, text="Klaar.")
