@@ -280,20 +280,17 @@ def _upsert(rows: list[dict], batch_size: int = 500) -> None:
         sys.exit(
             "FOUT: DATABASE_URL is geen geldige Postgres-DSN.\n"
             f"  Huidige waarde (begint met): {db_url[:60]}...\n"
-            "  Verwacht: postgresql://postgres:[pw]@db.[ref].supabase.co:5432/postgres\n\n"
-            "Op Railway? Check Variables → DATABASE_URL: zet daar de echte URI "
-            "(Supabase Dashboard → Settings → Database → Connection string → URI), "
-            "niet een template-referentie."
+            "  Verwacht (Connection Pooler): "
+            "postgresql://postgres.[ref]:[pw]@aws-0-eu-west-1.pooler.supabase.com:6543/postgres\n\n"
+            "Gebruik de Supabase Connection Pooler URL (port 6543), niet de directe DB host (port 5432).\n"
+            "De directe host geeft alleen een IPv6-adres terug dat op dit netwerk niet bereikbaar is."
         )
 
-    import socket
-    from urllib.parse import urlparse
-    _parsed = urlparse(db_url)
-    try:
-        _ipv4 = socket.getaddrinfo(_parsed.hostname, _parsed.port or 5432, socket.AF_INET)[0][4][0]
-        db_url = db_url.replace(_parsed.hostname, _ipv4)
-    except Exception:
-        pass
+    # Opmerking: de directe Supabase DB host (db.[ref].supabase.co:5432) resolvet op dit
+    # netwerk uitsluitend naar IPv6 (2a05:d018:...) en is daardoor onbereikbaar.
+    # We gebruiken de Supabase Connection Pooler (pooler.supabase.com:6543) die wel
+    # IPv4 adressen geeft. DATABASE_URL in .env wijst al naar de pooler — geen
+    # extra IPv4-forcering nodig.
 
     conn = psycopg2.connect(db_url)
     conn.autocommit = False
