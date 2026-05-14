@@ -31,7 +31,7 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
 
 STORE   = os.getenv("SHOPIFY_STORE", "")
 TOKEN   = os.getenv("SHOPIFY_ACCESS_TOKEN", "")
@@ -285,6 +285,15 @@ def _upsert(rows: list[dict], batch_size: int = 500) -> None:
             "(Supabase Dashboard → Settings → Database → Connection string → URI), "
             "niet een template-referentie."
         )
+
+    import socket
+    from urllib.parse import urlparse
+    _parsed = urlparse(db_url)
+    try:
+        _ipv4 = socket.getaddrinfo(_parsed.hostname, _parsed.port or 5432, socket.AF_INET)[0][4][0]
+        db_url = db_url.replace(_parsed.hostname, _ipv4)
+    except Exception:
+        pass
 
     conn = psycopg2.connect(db_url)
     conn.autocommit = False

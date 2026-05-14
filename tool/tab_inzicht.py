@@ -278,6 +278,8 @@ def _render_sync_banner() -> None:
         if run_sync:
             root = str(Path(__file__).resolve().parent.parent)
             script = str(Path(root) / "execution" / "shopify_meta_sync.py")
+            from dotenv import dotenv_values
+            _env = {**os.environ, **dotenv_values(Path(root) / ".env")}
 
             with st.spinner("Sync bezig (dit duurt ±1–3 min) ..."):
                 try:
@@ -288,6 +290,7 @@ def _render_sync_banner() -> None:
                         cwd=root,
                         timeout=300,
                         encoding="utf-8",
+                        env=_env,
                     )
                     output = result.stdout + result.stderr
                     if result.returncode == 0:

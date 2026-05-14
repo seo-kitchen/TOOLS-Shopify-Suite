@@ -505,12 +505,15 @@ def render() -> None:
         )
     if do_resync:
         import subprocess, sys as _sys
+        from dotenv import dotenv_values
         root   = str(Path(__file__).parent.parent)
         script = str(Path(root) / "execution" / "shopify_meta_sync.py")
+        _env = {**os.environ, **dotenv_values(Path(root) / ".env")}
         with st.spinner("Shopify meta-sync bezig (~30-60s) ..."):
             result = subprocess.run(
                 [_sys.executable, script],
                 capture_output=True, text=True, cwd=root, timeout=300, encoding="utf-8",
+                env=_env,
             )
         if result.returncode == 0:
             st.success("✅ Shopify meta-sync klaar — data ververst.")
